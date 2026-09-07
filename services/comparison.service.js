@@ -96,10 +96,10 @@ const buildCandidateRelationship = (fact, candidate, similarityScore) => {
       sameCurrency: compatibility.signals.sameCurrency,
       semanticSimilarity: similarityScore,
     },
-    evidence: {
-      factA: { documentId: factA.documentId, pageId: factA.pageId, chunkId: factA.chunkId, sourceText: factA.sourceText },
-      factB: { documentId: factB.documentId, pageId: factB.pageId, chunkId: factB.chunkId, sourceText: factB.sourceText },
-    },
+    evidence: [
+      { fact: "Fact A", documentId: factA.documentId, pageId: factA.pageId, pageNumber: factA.pageNumber ?? null, chunkId: factA.chunkId, sourceText: factA.sourceText || null },
+      { fact: "Fact B", documentId: factB.documentId, pageId: factB.pageId, pageNumber: factB.pageNumber ?? null, chunkId: factB.chunkId, sourceText: factB.sourceText || null },
+    ],
     status: "pending",
   };
 };

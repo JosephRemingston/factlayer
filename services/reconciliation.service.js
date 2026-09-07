@@ -49,10 +49,10 @@ const buildComparisonSignals = (factA, factB, semanticSimilarity = null) => {
 
 const reconcileFacts = (factA, factB, semanticSimilarity = null) => {
   const comparisonSignals = buildComparisonSignals(factA, factB, semanticSimilarity);
-  const evidence = {
-    factA: { documentId: factA.documentId, pageId: factA.pageId, pageNumber: factA.pageNumber ?? null, chunkId: factA.chunkId, sourceText: factA.sourceText || null },
-    factB: { documentId: factB.documentId, pageId: factB.pageId, pageNumber: factB.pageNumber ?? null, chunkId: factB.chunkId, sourceText: factB.sourceText || null },
-  };
+  const evidence = [
+    { fact: "Fact A", documentId: factA.documentId, pageId: factA.pageId, pageNumber: factA.pageNumber ?? null, chunkId: factA.chunkId, sourceText: factA.sourceText || null },
+    { fact: "Fact B", documentId: factB.documentId, pageId: factB.pageId, pageNumber: factB.pageNumber ?? null, chunkId: factB.chunkId, sourceText: factB.sourceText || null },
+  ];
   const confidence = Math.min(factA.confidence ?? 0, factB.confidence ?? 0, semanticSimilarity ?? 1);
   let relationshipType = "uncertain";
   let reason = "There is not enough normalized evidence to reconcile these facts.";
