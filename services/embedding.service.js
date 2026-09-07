@@ -69,6 +69,12 @@ const upsertFactEmbeddings = async (facts) => {
       value: typeof fact.value === "object" ? JSON.stringify(fact.value) : String(fact.value ?? ""),
       period: fact.period || "",
       scope: fact.scope || "",
+      normalizedSubject: fact.normalizedSubject || "",
+      normalizedPredicate: fact.normalizedPredicate || "",
+      normalizedValue: fact.normalizedValue ?? 0,
+      normalizedCurrency: fact.normalizedCurrency || "",
+      periodLabel: fact.periodLabel || "",
+      normalizedScope: fact.normalizedScope || "",
     },
   }));
   await getPineconeIndex().namespace("facts").upsert(records);
@@ -79,10 +85,20 @@ const deleteFactVectors = async (factIds) => {
   await getPineconeIndex().namespace("facts").deleteMany(factIds.map(getFactVectorId));
 };
 
+const queryFactVectors = async (text, topK = 20) => {
+  const [vector] = await createEmbeddings([text]);
+  return getPineconeIndex().namespace("facts").query({
+    vector,
+    topK,
+    includeMetadata: true,
+  });
+};
+
 export {
   upsertChunkEmbeddings,
   deleteChunkVectors,
   upsertFactEmbeddings,
   deleteFactVectors,
   getFactVectorId,
+  queryFactVectors,
 };

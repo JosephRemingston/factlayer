@@ -7,6 +7,9 @@ import Fact from "../models/fact.models.js";
 import extractPdfPages from "./pdf.service.js";
 import { createChunksForPage } from "./chunk.service.js";
 import { extractFactsFromChunk } from "./extraction.service.js";
+import { normalizeFact } from "./normalization.service.js";
+import { createCandidateRelationships, deleteRelationshipsForFacts } from "./comparison.service.js";
+import { reconcileRelationships } from "./reconciliation.service.js";
 import {
   deleteChunkVectors,
   deleteFactVectors,
@@ -71,6 +74,7 @@ const processDocument = async (documentId) => {
     const previousFacts = await Fact.find({ documentId }).select("_id").lean();
     await deleteChunkVectors(previousChunks.map((chunk) => chunk.vectorId));
     await deleteFactVectors(previousFacts.map((fact) => fact._id));
+    await deleteRelationshipsForFacts(previousFacts.map((fact) => fact._id));
     await Fact.deleteMany({ documentId });
     await Page.deleteMany({ documentId });
     await Chunk.deleteMany({ documentId });
@@ -91,8 +95,11 @@ const processDocument = async (documentId) => {
     for (const chunk of chunkRecords) {
       extractedFacts.push(...await extractFactsFromChunk(chunk));
     }
-    const factRecords = extractedFacts.length ? await Fact.insertMany(extractedFacts) : [];
+    const normalizedFacts = extractedFacts.map(normalizeFact);
+    const factRecords = normalizedFacts.length ? await Fact.insertMany(normalizedFacts) : [];
     await upsertFactEmbeddings(factRecords);
+    const candidateRelationships = await createCandidateRelationships(factRecords);
+    await reconcileRelationships(candidateRelationships);
     document.status = "processed";
     document.pageCount = pageRecords.length;
     document.chunkCount = chunkRecords.length;

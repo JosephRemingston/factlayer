@@ -1,3 +1,9 @@
 export const DOCUMENT_PROCESSING_QUEUE = "document-processing";
 export const PROCESS_DOCUMENT_JOB = "processDocument";
 export const MAX_CHUNK_CHARACTERS = 1200;
+export const FACT_SIMILARITY_THRESHOLD = 0.78;
+export const MATCH_CONFIDENCE_THRESHOLD = 0.6;
+export const FACT_COMPATIBILITY_THRESHOLD = 0.75;
+export const FACT_MATCH_TOP_K = 20;
+export const FACT_VALUE_TOLERANCE = 0.01;
+export const FACT_PERCENTAGE_TOLERANCE = 0.01;

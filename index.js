@@ -5,6 +5,7 @@ import connectDatabase from "./configs/database.js";
 import { connectRedis } from "./configs/redis.js";
 import documentRoutes from "./routes/document.routes.js";
 import factRoutes from "./routes/fact.routes.js";
+import relationshipRoutes from "./routes/relationship.routes.js";
 import errorMiddleware from "./middlewares/error.middleware.js";
 
 const app = express();
@@ -16,6 +17,7 @@ app.get("/health", (req, res) => {
 });
 app.use("/api/documents", documentRoutes);
 app.use("/api/facts", factRoutes);
+app.use("/api/relationships", relationshipRoutes);
 app.use(errorMiddleware);
 
 const PORT = process.env.PORT || 3000;

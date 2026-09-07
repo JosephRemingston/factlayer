@@ -2,7 +2,7 @@
 
 FactLayer Part 1 is the document ingestion foundation for an evidence-grounded knowledge system. It stores the original PDF in private AWS S3, keeps canonical document/page/chunk data in MongoDB, processes asynchronously with Redis and BullMQ, and stores chunk embeddings in Pinecone for future semantic retrieval.
 
-Part 2 extends that pipeline with validated, evidence-grounded LLM fact extraction and fact-level Pinecone embeddings.
+Part 2 extends that pipeline with validated, evidence-grounded LLM fact extraction and fact-level Pinecone embeddings. Part 3 adds deterministic fact normalization while preserving every raw value and source reference. Part 4 retrieves semantically similar fact vectors and stores compatibility-filtered candidate relationships. Part 5 deterministically classifies candidates as corroborated, contradiction, contextual difference, or uncertain.
 
 ## Scope
 
@@ -26,7 +26,13 @@ Express upload controller
                             |
                         LLM fact extraction
                             |
-                     MongoDB Facts -> Pinecone (facts)
+                       Fact normalization
+                            |
+                         MongoDB Facts -> Pinecone (facts)
+                                    |
+                         Candidate relationships
+                                    |
+                           Reconciliation
 ```
 
 Fact extraction, normalization, reconciliation, and UI are intentionally outside this part.
@@ -103,12 +109,24 @@ Get one fact with its source document, page, chunk, and evidence:
 curl http://localhost:3000/api/facts/<fact-id>
 ```
 
+Get candidate relationships for a document:
+
+```sh
+curl http://localhost:3000/api/relationships/document/<document-id>
+```
+
+Get one candidate relationship:
+
+```sh
+curl http://localhost:3000/api/relationships/<relationship-id>
+```
+
 ## Processing flow
 
-The API creates the MongoDB document first so Mongoose supplies its ObjectId. That ObjectId becomes `documents/{documentId}/original.pdf` in S3. The upload response returns immediately after the BullMQ job is queued. The worker downloads the private PDF, persists source-numbered pages, creates deterministic character-bounded chunks, generates chunk embeddings in the `chunks` namespace, extracts validated facts with grounded source spans, stores facts in MongoDB, and writes fact embeddings to the separate `facts` namespace. Retries remove the prior pages, chunks, facts, and corresponding vector IDs before rebuilding them.
+The API creates the MongoDB document first so Mongoose supplies its ObjectId. That ObjectId becomes `documents/{documentId}/original.pdf` in S3. The upload response returns immediately after the BullMQ job is queued. The worker downloads the private PDF, persists source-numbered pages, creates deterministic character-bounded chunks, generates chunk embeddings in the `chunks` namespace, extracts validated facts with grounded source spans, normalizes aliases, numbers, currencies, percentages, periods, and scopes, stores raw plus canonical facts in MongoDB, and writes canonical fact metadata to the separate `facts` namespace. Retries remove the prior pages, chunks, facts, and corresponding vector IDs before rebuilding them.
 
 MongoDB is the source of truth for document metadata, pages, chunks, relationships, and processing errors. S3 is the source of truth for the original PDF. Pinecone only supports semantic retrieval; its metadata points back to authoritative MongoDB evidence.
 
 ## Limitations and next part
 
-Scanned PDFs requiring OCR are not supported. Pinecone, the embedding provider, and the fact extraction model must be configured before processing can complete. Cross-document normalization, entity resolution, semantic matching, contradiction detection, and reconciliation remain future parts.
+Scanned PDFs requiring OCR are not supported. Pinecone, the embedding provider, and the fact extraction model must be configured before processing can complete. Reconciliation is deterministic and evidence-grounded; it does not implement a frontend, graph visualization, or advanced search.
