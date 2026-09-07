@@ -3,9 +3,16 @@ import s3Client from "../configs/s3.js";
 import Document from "../models/document.models.js";
 import Page from "../models/page.models.js";
 import Chunk from "../models/chunk.models.js";
+import Fact from "../models/fact.models.js";
 import extractPdfPages from "./pdf.service.js";
 import { createChunksForPage } from "./chunk.service.js";
-import { deleteChunkVectors, upsertChunkEmbeddings } from "./embedding.service.js";
+import { extractFactsFromChunk } from "./extraction.service.js";
+import {
+  deleteChunkVectors,
+  deleteFactVectors,
+  upsertChunkEmbeddings,
+  upsertFactEmbeddings,
+} from "./embedding.service.js";
 
 const bucket = () => {
   if (!process.env.AWS_BUCKET_NAME) throw new Error("AWS_BUCKET_NAME is required");
@@ -61,7 +68,10 @@ const processDocument = async (documentId) => {
 
   try {
     const previousChunks = await Chunk.find({ documentId }).select("vectorId").lean();
+    const previousFacts = await Fact.find({ documentId }).select("_id").lean();
     await deleteChunkVectors(previousChunks.map((chunk) => chunk.vectorId));
+    await deleteFactVectors(previousFacts.map((fact) => fact._id));
+    await Fact.deleteMany({ documentId });
     await Page.deleteMany({ documentId });
     await Chunk.deleteMany({ documentId });
     const pages = await extractPdfPages(await getS3ObjectBuffer(document.s3Key));
@@ -77,6 +87,12 @@ const processDocument = async (documentId) => {
       vectorId: `chunk_${chunk.documentId}_${chunk.pageNumber}_${chunk.chunkIndex}`,
     })));
     await upsertChunkEmbeddings(chunkRecords);
+    const extractedFacts = [];
+    for (const chunk of chunkRecords) {
+      extractedFacts.push(...await extractFactsFromChunk(chunk));
+    }
+    const factRecords = extractedFacts.length ? await Fact.insertMany(extractedFacts) : [];
+    await upsertFactEmbeddings(factRecords);
     document.status = "processed";
     document.pageCount = pageRecords.length;
     document.chunkCount = chunkRecords.length;

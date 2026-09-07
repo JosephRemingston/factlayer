@@ -13,6 +13,8 @@ const getPineconeIndex = () => {
   return pineconeIndex;
 };
 
+const getFactVectorId = (factId) => `fact_${factId.toString()}`;
+
 const createEmbeddings = async (texts) => {
   if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is required for embeddings");
   const response = await fetch("https://api.openai.com/v1/embeddings", {
@@ -51,4 +53,36 @@ const deleteChunkVectors = async (vectorIds) => {
   await getPineconeIndex().namespace(process.env.PINECONE_NAMESPACE || "factlayer").deleteMany(vectorIds);
 };
 
-export { upsertChunkEmbeddings, deleteChunkVectors };
+const upsertFactEmbeddings = async (facts) => {
+  if (!facts.length) return;
+  const vectors = await createEmbeddings(facts.map((fact) => fact.sourceText));
+  const records = facts.map((fact, index) => ({
+    id: getFactVectorId(fact._id),
+    values: vectors[index],
+    metadata: {
+      factId: fact._id.toString(),
+      documentId: fact.documentId.toString(),
+      pageId: fact.pageId.toString(),
+      chunkId: fact.chunkId.toString(),
+      subject: fact.subject,
+      predicate: fact.predicate,
+      value: typeof fact.value === "object" ? JSON.stringify(fact.value) : String(fact.value ?? ""),
+      period: fact.period || "",
+      scope: fact.scope || "",
+    },
+  }));
+  await getPineconeIndex().namespace("facts").upsert(records);
+};
+
+const deleteFactVectors = async (factIds) => {
+  if (!factIds.length || !process.env.PINECONE_API_KEY) return;
+  await getPineconeIndex().namespace("facts").deleteMany(factIds.map(getFactVectorId));
+};
+
+export {
+  upsertChunkEmbeddings,
+  deleteChunkVectors,
+  upsertFactEmbeddings,
+  deleteFactVectors,
+  getFactVectorId,
+};
