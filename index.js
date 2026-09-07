@@ -1,16 +1,27 @@
+import "dotenv/config";
 import express from "express";
 import cors from "cors";
+import connectDatabase from "./configs/database.js";
+import { connectRedis } from "./configs/redis.js";
+import documentRoutes from "./routes/document.routes.js";
+import errorMiddleware from "./middlewares/error.middleware.js";
 
-
-var app = express();
+const app = express();
 app.use(cors());
 app.use(express.json());
 
-app.get("/", (req, res) => {
-  res.send("Hello World!");
+app.get("/health", (req, res) => {
+  res.json({ status: "UP", timestamp: new Date().toISOString(), uptime: process.uptime() });
 });
+app.use("/api/documents", documentRoutes);
+app.use(errorMiddleware);
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-});
+
+const startServer = async () => {
+  await connectDatabase();
+  await connectRedis();
+  app.listen(PORT, () => console.log(`Server is running on port ${PORT}`));
+};
+
+startServer();

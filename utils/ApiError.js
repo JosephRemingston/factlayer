@@ -4,7 +4,7 @@ class ApiError extends Error {
     this.statusCode = statusCode;
     this.message = message;
     this.details = details;
-    this.stack = new Error().stack;
+    this.name = "ApiError";
   }
   static badRequest(message, details) { return new ApiError(400, message, details); }
   static unauthorized(message = "Unauthorized") { return new ApiError(401, message); }
