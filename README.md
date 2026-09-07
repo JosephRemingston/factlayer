@@ -130,6 +130,18 @@ Get one fact with its source document, page, chunk, and evidence:
 curl http://localhost:3000/api/facts/<fact-id>
 ```
 
+Search facts semantically through Pinecone and hydrate canonical MongoDB facts:
+
+```sh
+curl "http://localhost:3000/api/facts/search?q=How%20many%20employees%20did%20the%20company%20have%3F&topK=10"
+```
+
+Search source chunks semantically:
+
+```sh
+curl "http://localhost:3000/api/search/chunks?q=company%20workforce&topK=10"
+```
+
 Get candidate relationships for a document:
 
 ```sh
@@ -144,10 +156,10 @@ curl http://localhost:3000/api/relationships/<relationship-id>
 
 ## Processing flow
 
-The API creates the MongoDB document first so Mongoose supplies its ObjectId. That ObjectId becomes `documents/{documentId}/original.pdf` in S3. The upload response returns immediately after the BullMQ job is queued. The worker downloads the private PDF, persists source-numbered pages, creates deterministic character-bounded chunks, generates chunk embeddings in the `chunks` namespace, extracts validated facts with grounded source spans, normalizes aliases, numbers, currencies, percentages, periods, and scopes, stores raw plus canonical facts in MongoDB, and writes canonical fact metadata to the separate `facts` namespace. Retries remove the prior pages, chunks, facts, and corresponding vector IDs before rebuilding them.
+The API streams uploads to a temporary disk file, uploads that file to private S3, and removes the temporary file after the S3 operation. This avoids holding large uploads in request memory. The API creates the MongoDB document first so Mongoose supplies its ObjectId. That ObjectId becomes `documents/{documentId}/original.pdf` in S3. The upload response returns immediately after the BullMQ job is queued. The worker downloads the private PDF, persists source-numbered pages, creates deterministic character-bounded chunks, generates chunk embeddings in the `chunks` namespace, extracts validated facts with grounded source spans, normalizes aliases, numbers, currencies, percentages, periods, and scopes, stores raw plus canonical facts in MongoDB, and writes canonical fact metadata to the separate `facts` namespace. Retries remove the prior pages, chunks, facts, and corresponding vector IDs before rebuilding them.
 
 MongoDB is the source of truth for document metadata, pages, chunks, relationships, and processing errors. S3 is the source of truth for the original PDF. Pinecone only supports semantic retrieval; its metadata points back to authoritative MongoDB evidence.
 
 ## Limitations and next part
 
-Scanned PDFs requiring OCR are not supported. Pinecone, the embedding provider, and the fact extraction model must be configured before processing can complete. Reconciliation and explanations are deterministic and evidence-grounded; frontend, graph visualization, and advanced search remain out of scope.
+Scanned PDFs requiring OCR are not supported. Pinecone, the embedding provider, and the fact extraction model must be configured before processing can complete. Reconciliation and explanations are deterministic and evidence-grounded; frontend and graph visualization remain out of scope. Semantic fact and chunk search are available through Pinecone-backed APIs.

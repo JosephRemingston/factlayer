@@ -7,3 +7,4 @@ export const FACT_COMPATIBILITY_THRESHOLD = 0.75;
 export const FACT_MATCH_TOP_K = 20;
 export const FACT_VALUE_TOLERANCE = 0.01;
 export const FACT_PERCENTAGE_TOLERANCE = 0.01;
+export const EMBEDDING_BATCH_SIZE = 64;

@@ -1,4 +1,5 @@
 import { Pinecone } from "@pinecone-database/pinecone";
+import { EMBEDDING_BATCH_SIZE } from "../utils/constants.js";
 
 let pineconeIndex;
 
@@ -32,20 +33,23 @@ const createEmbeddings = async (texts) => {
 
 const upsertChunkEmbeddings = async (chunks) => {
   if (!chunks.length) return;
-  const vectors = await createEmbeddings(chunks.map((chunk) => chunk.text));
-  const records = chunks.map((chunk, index) => ({
-    id: chunk.vectorId,
-    values: vectors[index],
-    metadata: {
-      documentId: chunk.documentId.toString(),
-      pageId: chunk.pageId.toString(),
-      pageNumber: chunk.pageNumber,
-      chunkId: chunk._id.toString(),
-      chunkIndex: chunk.chunkIndex,
-      text: chunk.text,
-    },
-  }));
-  await getPineconeIndex().namespace(process.env.PINECONE_NAMESPACE || "factlayer").upsert(records);
+  const namespace = getPineconeIndex().namespace(process.env.PINECONE_NAMESPACE || "factlayer");
+  for (let index = 0; index < chunks.length; index += EMBEDDING_BATCH_SIZE) {
+    const batch = chunks.slice(index, index + EMBEDDING_BATCH_SIZE);
+    const vectors = await createEmbeddings(batch.map((chunk) => chunk.text));
+    await namespace.upsert(batch.map((chunk, batchIndex) => ({
+      id: chunk.vectorId,
+      values: vectors[batchIndex],
+      metadata: {
+        documentId: chunk.documentId.toString(),
+        pageId: chunk.pageId.toString(),
+        pageNumber: chunk.pageNumber,
+        chunkId: chunk._id.toString(),
+        chunkIndex: chunk.chunkIndex,
+        text: chunk.text,
+      },
+    })));
+  }
 };
 
 const deleteChunkVectors = async (vectorIds) => {
@@ -55,29 +59,32 @@ const deleteChunkVectors = async (vectorIds) => {
 
 const upsertFactEmbeddings = async (facts) => {
   if (!facts.length) return;
-  const vectors = await createEmbeddings(facts.map((fact) => fact.sourceText));
-  const records = facts.map((fact, index) => ({
-    id: getFactVectorId(fact._id),
-    values: vectors[index],
-    metadata: {
-      factId: fact._id.toString(),
-      documentId: fact.documentId.toString(),
-      pageId: fact.pageId.toString(),
-      chunkId: fact.chunkId.toString(),
-      subject: fact.subject,
-      predicate: fact.predicate,
-      value: typeof fact.value === "object" ? JSON.stringify(fact.value) : String(fact.value ?? ""),
-      period: fact.period || "",
-      scope: fact.scope || "",
-      normalizedSubject: fact.normalizedSubject || "",
-      normalizedPredicate: fact.normalizedPredicate || "",
-      normalizedValue: fact.normalizedValue ?? 0,
-      normalizedCurrency: fact.normalizedCurrency || "",
-      periodLabel: fact.periodLabel || "",
-      normalizedScope: fact.normalizedScope || "",
-    },
-  }));
-  await getPineconeIndex().namespace("facts").upsert(records);
+  const namespace = getPineconeIndex().namespace("facts");
+  for (let index = 0; index < facts.length; index += EMBEDDING_BATCH_SIZE) {
+    const batch = facts.slice(index, index + EMBEDDING_BATCH_SIZE);
+    const vectors = await createEmbeddings(batch.map((fact) => fact.sourceText));
+    await namespace.upsert(batch.map((fact, batchIndex) => ({
+      id: getFactVectorId(fact._id),
+      values: vectors[batchIndex],
+      metadata: {
+        factId: fact._id.toString(),
+        documentId: fact.documentId.toString(),
+        pageId: fact.pageId.toString(),
+        chunkId: fact.chunkId.toString(),
+        subject: fact.subject,
+        predicate: fact.predicate,
+        value: typeof fact.value === "object" ? JSON.stringify(fact.value) : String(fact.value ?? ""),
+        period: fact.period || "",
+        scope: fact.scope || "",
+        normalizedSubject: fact.normalizedSubject || "",
+        normalizedPredicate: fact.normalizedPredicate || "",
+        normalizedValue: fact.normalizedValue ?? 0,
+        normalizedCurrency: fact.normalizedCurrency || "",
+        periodLabel: fact.periodLabel || "",
+        normalizedScope: fact.normalizedScope || "",
+      },
+    })));
+  }
 };
 
 const deleteFactVectors = async (factIds) => {
@@ -94,6 +101,15 @@ const queryFactVectors = async (text, topK = 20) => {
   });
 };
 
+const queryChunkVectors = async (text, topK = 20) => {
+  const [vector] = await createEmbeddings([text]);
+  return getPineconeIndex().namespace(process.env.PINECONE_NAMESPACE || "factlayer").query({
+    vector,
+    topK,
+    includeMetadata: true,
+  });
+};
+
 export {
   upsertChunkEmbeddings,
   deleteChunkVectors,
@@ -101,4 +117,5 @@ export {
   deleteFactVectors,
   getFactVectorId,
   queryFactVectors,
+  queryChunkVectors,
 };

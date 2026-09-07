@@ -2,6 +2,20 @@ import mongoose from "mongoose";
 import ApiError from "../utils/ApiError.js";
 import ApiResponse from "../utils/ApiResponse.js";
 import Fact from "../models/fact.models.js";
+import { searchFacts } from "../services/search.service.js";
+
+const parseTopK = (value) => {
+  const topK = Number(value || 10);
+  if (!Number.isInteger(topK) || topK < 1 || topK > 100) throw ApiError.badRequest("topK must be an integer between 1 and 100");
+  return topK;
+};
+
+const searchFactRecords = async (req, res) => {
+  const query = String(req.query.q || "").trim();
+  if (!query) throw ApiError.badRequest("The q query parameter is required");
+  const results = await searchFacts(query, parseTopK(req.query.topK));
+  return ApiResponse.success(res, "Fact search completed successfully", { query, results });
+};
 
 const getDocumentFacts = async (req, res) => {
   if (!mongoose.isValidObjectId(req.params.documentId)) throw ApiError.badRequest("Invalid document ID");
@@ -26,4 +40,4 @@ const getFact = async (req, res) => {
   });
 };
 
-export { getDocumentFacts, getFact };
+export { getDocumentFacts, getFact, searchFactRecords };

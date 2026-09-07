@@ -7,6 +7,7 @@ import {
   getDocumentPages,
   getPageById,
 } from "../services/evidence.service.js";
+import { searchChunks } from "../services/search.service.js";
 
 const validateObjectId = (value, label) => {
   if (!mongoose.isValidObjectId(value)) throw ApiError.badRequest(`Invalid ${label}`);
@@ -43,4 +44,13 @@ const getChunk = async (req, res) => {
   });
 };
 
-export { getPagesForDocument, getChunksForDocument, getPage, getChunk };
+const searchChunkRecords = async (req, res) => {
+  const query = String(req.query.q || "").trim();
+  if (!query) throw ApiError.badRequest("The q query parameter is required");
+  const topK = Number(req.query.topK || 10);
+  if (!Number.isInteger(topK) || topK < 1 || topK > 100) throw ApiError.badRequest("topK must be an integer between 1 and 100");
+  const results = await searchChunks(query, topK);
+  return ApiResponse.success(res, "Chunk search completed successfully", { query, results });
+};
+
+export { getPagesForDocument, getChunksForDocument, getPage, getChunk, searchChunkRecords };

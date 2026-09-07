@@ -1,4 +1,6 @@
-import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
+import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
+import fs from "node:fs";
+import fsPromises from "node:fs/promises";
 import s3Client from "../configs/s3.js";
 import Document from "../models/document.models.js";
 import Page from "../models/page.models.js";
@@ -52,13 +54,17 @@ const createDocument = async (file) => {
     await s3Client.send(new PutObjectCommand({
       Bucket: bucket(),
       Key: document.s3Key,
-      Body: file.buffer,
+      Body: file.path ? fs.createReadStream(file.path) : file.buffer,
+      ContentLength: file.size,
       ContentType: "application/pdf",
     }));
     return await document.save();
   } catch (error) {
     await Document.findByIdAndDelete(document._id);
+    await s3Client.send(new DeleteObjectCommand({ Bucket: bucket(), Key: document.s3Key })).catch(() => {});
     throw error;
+  } finally {
+    if (file.path) await fsPromises.unlink(file.path).catch(() => {});
   }
 };
 
