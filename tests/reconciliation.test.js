@@ -5,6 +5,7 @@ import { reconcileFacts } from "../services/reconciliation.service.js";
 const baseFact = {
   documentId: "document-a",
   pageId: "page-a",
+  pageNumber: 4,
   chunkId: "chunk-a",
   normalizedSubject: "company",
   normalizedPredicate: "revenue",
@@ -29,6 +30,9 @@ test("equal facts are corroborated", () => {
   }, 0.94);
   assert.equal(result.relationshipType, "corroborated");
   assert.equal(result.comparisonSignals.valuesEqualWithinTolerance, true);
+  assert.equal(result.classification, "corroborated");
+  assert.equal(result.evidence[0].pageNumber, 4);
+  assert.match(result.detailedReason, /Revenue was \$120M/);
 });
 
 test("materially different same-period values are contradictions", () => {
@@ -56,6 +60,8 @@ test("different periods are contextual differences, not contradictions", () => {
   }, 0.88);
   assert.equal(result.relationshipType, "contextual_difference");
   assert.match(result.context, /period differs/);
+  assert.match(result.summary, /contextual_difference/);
+  assert.ok(result.keyDifferences.some((difference) => difference.includes("Periods differ")));
 });
 
 test("different scope, currency, or missing evidence remains explainable", () => {
@@ -74,4 +80,12 @@ test("different scope, currency, or missing evidence remains explainable", () =>
     normalizedValue: null,
   }, 0.8);
   assert.equal(uncertain.relationshipType, "uncertain");
+  const missingEvidence = reconcileFacts({ ...baseFact, sourceText: null, pageNumber: null }, {
+    ...baseFact,
+    documentId: "document-b",
+    sourceText: null,
+    pageNumber: null,
+  }, 0.8);
+  assert.match(missingEvidence.detailedReason, /Evidence is unavailable/);
+  assert.equal(missingEvidence.evidence[0].evidenceAvailable, false);
 });

@@ -5,6 +5,7 @@ const factSchema = new mongoose.Schema(
     documentId: { type: mongoose.Schema.Types.ObjectId, ref: "Document", required: true, index: true },
     pageId: { type: mongoose.Schema.Types.ObjectId, ref: "Page", required: true, index: true },
     chunkId: { type: mongoose.Schema.Types.ObjectId, ref: "Chunk", required: true, index: true },
+    pageNumber: { type: Number, default: null },
     subject: { type: String, required: true, trim: true },
     predicate: { type: String, required: true, trim: true },
     object: { type: mongoose.Schema.Types.Mixed, default: null },

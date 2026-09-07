@@ -1,6 +1,7 @@
 import Fact from "../models/fact.models.js";
 import Relationship from "../models/relationship.models.js";
 import { FACT_PERCENTAGE_TOLERANCE, FACT_VALUE_TOLERANCE } from "../utils/constants.js";
+import { buildRelationshipExplanation } from "./explanation.service.js";
 
 const toNumber = (value) => (typeof value === "number" && Number.isFinite(value) ? value : null);
 
@@ -49,38 +50,45 @@ const buildComparisonSignals = (factA, factB, semanticSimilarity = null) => {
 const reconcileFacts = (factA, factB, semanticSimilarity = null) => {
   const comparisonSignals = buildComparisonSignals(factA, factB, semanticSimilarity);
   const evidence = {
-    factA: { documentId: factA.documentId, pageId: factA.pageId, chunkId: factA.chunkId, sourceText: factA.sourceText },
-    factB: { documentId: factB.documentId, pageId: factB.pageId, chunkId: factB.chunkId, sourceText: factB.sourceText },
+    factA: { documentId: factA.documentId, pageId: factA.pageId, pageNumber: factA.pageNumber ?? null, chunkId: factA.chunkId, sourceText: factA.sourceText || null },
+    factB: { documentId: factB.documentId, pageId: factB.pageId, pageNumber: factB.pageNumber ?? null, chunkId: factB.chunkId, sourceText: factB.sourceText || null },
   };
   const confidence = Math.min(factA.confidence ?? 0, factB.confidence ?? 0, semanticSimilarity ?? 1);
+  let relationshipType = "uncertain";
+  let reason = "There is not enough normalized evidence to reconcile these facts.";
+  let context = null;
 
   if (!comparisonSignals.sameSubject || !comparisonSignals.samePredicate) {
-    return { relationshipType: "uncertain", confidence, reason: "Subject or predicate evidence is insufficient for reconciliation.", context: null, comparisonSignals, evidence };
+    reason = "Subject or predicate evidence is insufficient for reconciliation.";
+  } else {
+    const contextDifferences = [];
+    if (comparisonSignals.samePeriod === false) contextDifferences.push("period differs");
+    if (comparisonSignals.sameScope === false) contextDifferences.push("scope differs");
+    if (comparisonSignals.sameUnit === false) contextDifferences.push("unit differs");
+    if (comparisonSignals.sameCurrency === false) contextDifferences.push("currency differs");
+    if (contextDifferences.length) {
+      relationshipType = "contextual_difference";
+      context = contextDifferences.join(", ");
+      reason = `Facts share the same metric but ${context}.`;
+    } else if (comparisonSignals.valuesEqualWithinTolerance === true) {
+      relationshipType = "corroborated";
+      reason = "Facts have matching subject, metric, context, and values within tolerance.";
+    } else if (comparisonSignals.valuesEqualWithinTolerance === false && comparisonSignals.samePeriod === true && comparisonSignals.sameScope === true) {
+      relationshipType = "contradiction";
+      reason = "Facts have matching subject, metric, period, scope, and materially different values.";
+    }
   }
 
-  const contextDifferences = [];
-  if (comparisonSignals.samePeriod === false) contextDifferences.push("period differs");
-  if (comparisonSignals.sameScope === false) contextDifferences.push("scope differs");
-  if (comparisonSignals.sameUnit === false) contextDifferences.push("unit differs");
-  if (comparisonSignals.sameCurrency === false) contextDifferences.push("currency differs");
-  if (contextDifferences.length) {
-    return {
-      relationshipType: "contextual_difference",
-      confidence,
-      reason: `Facts share the same metric but ${contextDifferences.join(", ")}.`,
-      context: contextDifferences.join(", "),
-      comparisonSignals,
-      evidence,
-    };
-  }
-
-  if (comparisonSignals.valuesEqualWithinTolerance === true) {
-    return { relationshipType: "corroborated", confidence, reason: "Facts have matching subject, metric, context, and values within tolerance.", context: null, comparisonSignals, evidence };
-  }
-  if (comparisonSignals.valuesEqualWithinTolerance === false && comparisonSignals.samePeriod === true && comparisonSignals.sameScope === true) {
-    return { relationshipType: "contradiction", confidence, reason: "Facts have matching subject, metric, period, scope, and materially different values.", context: null, comparisonSignals, evidence };
-  }
-  return { relationshipType: "uncertain", confidence, reason: "There is not enough normalized evidence to reconcile these facts.", context: null, comparisonSignals, evidence };
+  const explanation = buildRelationshipExplanation({ factA, factB, relationshipType, confidence, comparisonSignals });
+  return {
+    relationshipType,
+    confidence,
+    reason,
+    context,
+    comparisonSignals,
+    evidence,
+    ...explanation,
+  };
 };
 
 const reconcileRelationships = async (relationships) => {

@@ -2,7 +2,7 @@
 
 FactLayer Part 1 is the document ingestion foundation for an evidence-grounded knowledge system. It stores the original PDF in private AWS S3, keeps canonical document/page/chunk data in MongoDB, processes asynchronously with Redis and BullMQ, and stores chunk embeddings in Pinecone for future semantic retrieval.
 
-Part 2 extends that pipeline with validated, evidence-grounded LLM fact extraction and fact-level Pinecone embeddings. Part 3 adds deterministic fact normalization while preserving every raw value and source reference. Part 4 retrieves semantically similar fact vectors and stores compatibility-filtered candidate relationships. Part 5 deterministically classifies candidates as corroborated, contradiction, contextual difference, or uncertain.
+Part 2 extends that pipeline with validated, evidence-grounded LLM fact extraction and fact-level Pinecone embeddings. Part 3 adds deterministic fact normalization while preserving every raw value and source reference. Part 4 retrieves semantically similar fact vectors and stores compatibility-filtered candidate relationships. Part 5 deterministically classifies candidates as corroborated, contradiction, contextual difference, or uncertain. Part 6 stores evidence-backed explanations for each classification.
 
 ## Scope
 
@@ -33,6 +33,8 @@ Express upload controller
                          Candidate relationships
                                     |
                            Reconciliation
+                                    |
+                         Evidence + explanation
 ```
 
 Fact extraction, normalization, reconciliation, and UI are intentionally outside this part.
@@ -129,4 +131,4 @@ MongoDB is the source of truth for document metadata, pages, chunks, relationshi
 
 ## Limitations and next part
 
-Scanned PDFs requiring OCR are not supported. Pinecone, the embedding provider, and the fact extraction model must be configured before processing can complete. Reconciliation is deterministic and evidence-grounded; it does not implement a frontend, graph visualization, or advanced search.
+Scanned PDFs requiring OCR are not supported. Pinecone, the embedding provider, and the fact extraction model must be configured before processing can complete. Reconciliation and explanations are deterministic and evidence-grounded; frontend, graph visualization, and advanced search remain out of scope.

@@ -53,6 +53,7 @@ const validateFact = (fact, chunk) => {
     documentId: chunk.documentId,
     pageId: chunk.pageId,
     chunkId: chunk._id,
+    pageNumber: chunk.pageNumber ?? null,
     extractionModel: EXTRACTION_MODEL(),
   };
 };
