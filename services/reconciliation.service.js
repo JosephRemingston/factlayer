@@ -4,6 +4,7 @@ import { FACT_PERCENTAGE_TOLERANCE, FACT_VALUE_TOLERANCE } from "../utils/consta
 import { buildRelationshipExplanation } from "./explanation.service.js";
 
 const toNumber = (value) => (typeof value === "number" && Number.isFinite(value) ? value : null);
+const asString = (value) => (value === null || value === undefined ? null : String(value).trim().toLowerCase());
 
 const sameValue = (left, right, tolerance) => {
   if (left === null || right === null) return null;
@@ -22,16 +23,21 @@ const sameScope = (factA, factB) => {
   return factA.normalizedScope === factB.normalizedScope;
 };
 
-const buildComparisonSignals = (factA, factB, semanticSimilarity = null) => {
+// `overrides` lets the comparison stage pass an adjudicator verdict that the subject and metric are
+// equivalent even though the normalized strings differ.
+const buildComparisonSignals = (factA, factB, semanticSimilarity = null, overrides = {}) => {
   const valueA = toNumber(factA.normalizedValue);
   const valueB = toNumber(factB.normalizedValue);
   const valueComparison = sameValue(valueA, valueB, FACT_VALUE_TOLERANCE);
   const percentageA = toNumber(factA.normalizedPercentage);
   const percentageB = toNumber(factB.normalizedPercentage);
   const percentageComparison = sameValue(percentageA, percentageB, FACT_PERCENTAGE_TOLERANCE);
+  const objectA = asString(factA.normalizedObject);
+  const objectB = asString(factB.normalizedObject);
+  const objectsEqual = objectA !== null && objectB !== null ? objectA === objectB : null;
   return {
-    sameSubject: Boolean(factA.normalizedSubject && factA.normalizedSubject === factB.normalizedSubject),
-    samePredicate: Boolean(factA.normalizedPredicate && factA.normalizedPredicate === factB.normalizedPredicate),
+    sameSubject: Boolean(factA.normalizedSubject && factA.normalizedSubject === factB.normalizedSubject) || Boolean(overrides.sameSubject),
+    samePredicate: Boolean(factA.normalizedPredicate && factA.normalizedPredicate === factB.normalizedPredicate) || Boolean(overrides.samePredicate),
     samePeriod: samePeriod(factA, factB),
     sameScope: sameScope(factA, factB),
     sameUnit: factA.normalizedUnit || factB.normalizedUnit
@@ -42,13 +48,16 @@ const buildComparisonSignals = (factA, factB, semanticSimilarity = null) => {
       : true,
     valueDifference: valueComparison?.difference ?? null,
     percentageDifference: valueComparison?.percentageDifference ?? percentageComparison?.percentageDifference ?? null,
-    valuesEqualWithinTolerance: valueComparison?.matches ?? percentageComparison?.matches ?? null,
+    // Numeric comparison wins; descriptive facts (names, statuses, places) fall back to their objects.
+    valuesEqualWithinTolerance: valueComparison?.matches ?? percentageComparison?.matches ?? objectsEqual,
+    objectsEqual,
     semanticSimilarity,
+    ...(overrides.adjudicated ? { adjudicated: overrides.adjudicated } : {}),
   };
 };
 
-const reconcileFacts = (factA, factB, semanticSimilarity = null) => {
-  const comparisonSignals = buildComparisonSignals(factA, factB, semanticSimilarity);
+const reconcileFacts = (factA, factB, semanticSimilarity = null, overrides = {}) => {
+  const comparisonSignals = buildComparisonSignals(factA, factB, semanticSimilarity, overrides);
   const evidence = [
     { fact: "Fact A", documentId: factA.documentId, pageId: factA.pageId, pageNumber: factA.pageNumber ?? null, chunkId: factA.chunkId, sourceText: factA.sourceText || null },
     { fact: "Fact B", documentId: factB.documentId, pageId: factB.pageId, pageNumber: factB.pageNumber ?? null, chunkId: factB.chunkId, sourceText: factB.sourceText || null },
@@ -73,9 +82,11 @@ const reconcileFacts = (factA, factB, semanticSimilarity = null) => {
     } else if (comparisonSignals.valuesEqualWithinTolerance === true) {
       relationshipType = "corroborated";
       reason = "Facts have matching subject, metric, context, and values within tolerance.";
-    } else if (comparisonSignals.valuesEqualWithinTolerance === false && comparisonSignals.samePeriod === true && comparisonSignals.sameScope === true) {
+    } else if (comparisonSignals.valuesEqualWithinTolerance === false && comparisonSignals.samePeriod === true && comparisonSignals.sameScope !== false) {
       relationshipType = "contradiction";
-      reason = "Facts have matching subject, metric, period, scope, and materially different values.";
+      reason = "Facts have matching subject, metric, and period, and materially different values.";
+    } else if (comparisonSignals.valuesEqualWithinTolerance === false) {
+      reason = "Values differ but at least one fact does not state its period, so this may be a change over time rather than a contradiction.";
     }
   }
 
@@ -100,7 +111,9 @@ const reconcileRelationships = async (relationships) => {
     const factA = factsById.get(relationship.factA.toString());
     const factB = factsById.get(relationship.factB.toString());
     if (!factA || !factB) return null;
-    return { relationship, result: reconcileFacts(factA, factB, relationship.similarityScore) };
+    const adjudicated = relationship.comparisonSignals?.adjudicated;
+    const overrides = adjudicated?.same ? { sameSubject: true, samePredicate: true, adjudicated } : {};
+    return { relationship, result: reconcileFacts(factA, factB, relationship.similarityScore, overrides) };
   }).filter(Boolean);
   if (updates.length) {
     await Relationship.bulkWrite(updates.map(({ relationship, result }) => ({

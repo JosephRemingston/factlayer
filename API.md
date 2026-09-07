@@ -2,6 +2,30 @@
 
 This contract describes the current implementation in `index.js`, the route files, controllers, and Mongoose models. Code is the source of truth. There is no authentication or authorization.
 
+![API design](docs/api-design.svg)
+
+## Endpoint Index
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/health` | Liveness check |
+| `POST` | `/api/documents/upload` | Upload 1 to 20 PDFs (`document` field); each starts processing immediately |
+| `GET` | `/api/documents` | List documents with progress |
+| `GET` | `/api/documents/:documentId` | One document with status, stage, and `progress` |
+| `POST` | `/api/documents/:documentId/reprocess` | Resume unfinished pages; `?reset=true` starts over |
+| `GET` | `/api/documents/:documentId/pages` | Page text in order |
+| `GET` | `/api/documents/:documentId/chunks` | Chunks (page-sized passages) in order |
+| `GET` | `/api/pages/:pageId` | One page |
+| `GET` | `/api/chunks/:chunkId` | One chunk with document and page populated |
+| `GET` | `/api/search/chunks?q=&topK=` | Semantic passage search |
+| `GET` | `/api/facts/document/:documentId` | Facts of a document |
+| `GET` | `/api/facts/:factId` | One fact with document, page, and chunk populated |
+| `GET` | `/api/facts/search?q=&topK=` | Semantic fact search |
+| `GET` | `/api/relationships/document/:documentId` | Relationships touching a document's facts |
+| `GET` | `/api/relationships/:relationshipId` | One relationship with both facts populated |
+| `POST` | `/api/ask` | Cited answer across all documents (`{ question, topK }`; `GET /api/ask?q=` also works) |
+| `GET` | `/api/showcase` | Best real example of each of the four assignment cases |
+
 ## API Base Information
 
 - Base URL: `http://localhost:3000`
@@ -62,7 +86,11 @@ Application errors use the same class-generated envelope:
 
 Common error messages include:
 
-- `A PDF file is required in the document field`
+- `At least one PDF file is required in the document field`
+- `Upload at most 20 PDF files per request in the document field`
+- `Document is already being processed`
+- `A question is required (body.question or ?q=)`
+- `topK must be an integer between 1 and 30`
 - `Only PDF files are allowed`
 - `File size must not exceed 200 MB`
 - `Invalid document ID`
@@ -82,10 +110,10 @@ Common error messages include:
 
 ### Document status
 
-- `uploaded`: S3 upload completed and the BullMQ job has been queued.
-- `processing`: worker processing has started.
+- `uploaded`: S3 upload completed and background processing is about to start.
+- `processing`: processing is running; `processingStage`, `processedChunkCount`, `chunkCount`, and `factCount` report progress.
 - `processed`: pages, chunks, embeddings, facts, relationships, and explanations completed without a caught error.
-- `failed`: a worker pipeline operation failed; `processingError` contains the caught message.
+- `failed`: a pipeline operation failed; `processingError` contains the caught message. `POST /api/documents/:documentId/reprocess` resumes it.
 
 ### Relationship classification
 
@@ -97,12 +125,12 @@ The persisted `relationshipType` and `classification` can be:
 - `contextual_difference`
 - `uncertain`
 
-Candidate records are created by semantic retrieval. The worker then reconciles them and normally sets `status` to `reviewed` with one of the four reconciliation classifications. `candidate` remains a valid schema value.
+Candidate records are created by semantic retrieval. The processor then reconciles them and normally sets `status` to `reviewed` with one of the four reconciliation classifications. `candidate` remains a valid schema value.
 
 ### Relationship status
 
 - `pending`: default relationship status before reconciliation.
-- `reviewed`: set by the reconciliation worker after classification.
+- `reviewed`: set by reconciliation after classification.
 
 ## Object Schemas
 
@@ -248,7 +276,7 @@ Evidence is returned inside relationship `evidence[]` and is also represented by
 
 #### Purpose
 
-Checks that the Express process is running. It does not verify MongoDB, Redis, S3, Pinecone, or the worker.
+Checks that the Express process is running. It does not verify MongoDB, S3, Pinecone, or MiniMax.
 
 #### Headers
 
@@ -282,7 +310,7 @@ HTTP `200`, not the standard `ApiResponse` envelope:
 
 #### Purpose
 
-Accepts one PDF, stores it in S3, creates document metadata in MongoDB, queues asynchronous processing, and returns without waiting for extraction or embeddings.
+Accepts one or more PDFs (up to 20 files in the `document` field, `documents` is also accepted), stores each in S3, creates document metadata in MongoDB, starts background processing in the API process, and returns without waiting for extraction or embeddings.
 
 #### Headers
 
@@ -347,9 +375,9 @@ HTTP `200`:
 
 | Status | Meaning |
 |---:|---|
-| `200` | S3 upload, MongoDB save, and queue insertion completed |
+| `200` | S3 upload and MongoDB save completed; processing started |
 | `400` | Missing file, invalid MIME/extension, or Multer validation failure |
-| `500` | S3, MongoDB, Redis, or queue failure |
+| `500` | S3 or MongoDB failure |
 
 #### Frontend usage
 
@@ -596,7 +624,7 @@ HTTP `200` with:
       "evidenceStart": null,
       "evidenceEnd": null,
       "confidence": 0.95,
-      "extractionModel": "gpt-4o-mini",
+      "extractionModel": "MiniMax-M3",
       "rawSubject": "Company",
       "rawPredicate": "revenue",
       "rawValue": "$120M",
@@ -797,10 +825,10 @@ HTTP `200`:
 
 | State | UI meaning | Recommended UI | Available API action |
 |---|---|---|---|
-| `uploaded` | File is stored and queued | Show queued/uploaded state | Poll `GET /api/documents/:documentId` |
-| `processing` | Worker is parsing/extracting | Show progress-independent processing state | Poll the same document endpoint |
+| `uploaded` | File is stored, processing starting | Show uploaded state | Poll `GET /api/documents/:documentId` |
+| `processing` | Parsing/extracting | Show `processingStage` and `processedChunkCount`/`chunkCount` | Poll the same document endpoint |
 | `processed` | Current pipeline completed | Show counts and enable facts/relationships/evidence views | Call facts, relationships, pages, chunks, and search endpoints |
-| `failed` | A worker step failed | Show `processingError` and failure state | Inspect document; upload a new document to process another copy |
+| `failed` | A pipeline step failed | Show `processingError` and failure state | `POST /api/documents/:documentId/reprocess` to resume |
 
 The API does not provide a progress percentage, cancel endpoint, retry endpoint, or websocket/SSE stream. Polling is the only implemented status observation mechanism.
 
@@ -810,7 +838,7 @@ The API does not provide a progress percentage, cancel endpoint, retry endpoint,
 sequenceDiagram
     participant UI as Frontend
     participant API as FactLayer API
-    participant Worker as BullMQ Worker
+    participant Worker as In-process Processor
 
     UI->>API: POST /api/documents/upload
     API-->>UI: document._id, status uploaded

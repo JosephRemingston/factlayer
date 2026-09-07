@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="660" viewBox="0 0 1200 660" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow2" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <style>
+      .card { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.5; rx: 12; }
+      .title { font-size: 15px; font-weight: 700; fill: #0f172a; }
+      .method { font-size: 11px; font-weight: 800; }
+      .path { font-size: 12.5px; fill: #0f172a; font-family: 'SFMono-Regular', Menlo, Consolas, monospace; }
+      .muted { font-size: 11.5px; fill: #64748b; }
+      .get { fill: #dcfce7; } .getT { fill: #166534; }
+      .post { fill: #dbeafe; } .postT { fill: #1e3a8a; }
+      .h1 { font-size: 20px; font-weight: 800; fill: #0f172a; }
+      .h2 { font-size: 12px; fill: #64748b; }
+      .flowBox { fill: #f8fafc; stroke: #e2e8f0; stroke-width: 1.5; rx: 12; }
+      .step { fill: #eef2ff; stroke: #c7d2fe; stroke-width: 1.5; rx: 8; }
+      .stepText { font-size: 12.5px; font-weight: 600; fill: #1e1b4b; }
+      .stepSub { font-size: 11px; fill: #4338ca; }
+      .line { stroke: #475569; stroke-width: 1.6; fill: none; marker-end: url(#arrow2); }
+    </style>
+  </defs>
+  <rect width="1200" height="660" fill="#ffffff"/>
+  <text x="40" y="40" class="h1">FactLayer — API Design</text>
+  <text x="40" y="62" class="h2">REST over JSON. Every response is { statusCode, message, data, success }. Base path /api. Full reference in API.md.</text>
+
+  <!-- Documents -->
+  <rect x="40" y="90" width="360" height="240" class="card"/>
+  <text x="60" y="116" class="title">Documents</text>
+  <rect x="60" y="130" width="42" height="18" rx="9" class="post"/><text x="68" y="143" class="method postT">POST</text>
+  <text x="110" y="143" class="path">/documents/upload</text>
+  <text x="110" y="158" class="muted">1–20 PDFs; each starts processing at once</text>
+  <rect x="60" y="170" width="42" height="18" rx="9" class="get"/><text x="72" y="183" class="method getT">GET</text>
+  <text x="110" y="183" class="path">/documents</text>
+  <text x="110" y="198" class="muted">All documents, newest first, with progress</text>
+  <rect x="60" y="210" width="42" height="18" rx="9" class="get"/><text x="72" y="223" class="method getT">GET</text>
+  <text x="110" y="223" class="path">/documents/:id</text>
+  <text x="110" y="238" class="muted">status, stage, progress percent and ETA</text>
+  <rect x="60" y="250" width="42" height="18" rx="9" class="post"/><text x="68" y="263" class="method postT">POST</text>
+  <text x="110" y="263" class="path">/documents/:id/reprocess</text>
+  <text x="110" y="278" class="muted">Resume unfinished pages; ?reset=true restarts</text>
+  <rect x="60" y="290" width="42" height="18" rx="9" class="get"/><text x="72" y="303" class="method getT">GET</text>
+  <text x="110" y="303" class="path">/health</text>
+  <text x="110" y="318" class="muted">Liveness check</text>
+
+  <!-- Facts -->
+  <rect x="420" y="90" width="360" height="240" class="card"/>
+  <text x="440" y="116" class="title">Facts &amp; relationships</text>
+  <rect x="440" y="130" width="42" height="18" rx="9" class="get"/><text x="452" y="143" class="method getT">GET</text>
+  <text x="490" y="143" class="path">/facts/document/:id</text>
+  <text x="490" y="158" class="muted">Facts of a document with evidence links</text>
+  <rect x="440" y="170" width="42" height="18" rx="9" class="get"/><text x="452" y="183" class="method getT">GET</text>
+  <text x="490" y="183" class="path">/facts/:id</text>
+  <text x="490" y="198" class="muted">One fact with document, page, chunk</text>
+  <rect x="440" y="210" width="42" height="18" rx="9" class="get"/><text x="452" y="223" class="method getT">GET</text>
+  <text x="490" y="223" class="path">/facts/search?q=</text>
+  <text x="490" y="238" class="muted">Semantic fact search</text>
+  <rect x="440" y="250" width="42" height="18" rx="9" class="get"/><text x="452" y="263" class="method getT">GET</text>
+  <text x="490" y="263" class="path">/relationships/document/:id</text>
+  <text x="490" y="278" class="muted">Corroborated · contradiction · contextual</text>
+  <rect x="440" y="290" width="42" height="18" rx="9" class="get"/><text x="452" y="303" class="method getT">GET</text>
+  <text x="490" y="303" class="path">/relationships/:id</text>
+  <text x="490" y="318" class="muted">Both facts, signals, reasoning, differences</text>
+
+  <!-- Answers & cases -->
+  <rect x="800" y="90" width="360" height="240" class="card"/>
+  <text x="820" y="116" class="title">Answers, cases &amp; evidence</text>
+  <rect x="820" y="130" width="42" height="18" rx="9" class="post"/><text x="828" y="143" class="method postT">POST</text>
+  <text x="870" y="143" class="path">/ask  { question, topK }</text>
+  <text x="870" y="158" class="muted">Cited answer: document, page, quote per claim</text>
+  <rect x="820" y="170" width="42" height="18" rx="9" class="get"/><text x="832" y="183" class="method getT">GET</text>
+  <text x="870" y="183" class="path">/showcase</text>
+  <text x="870" y="198" class="muted">The four cases with evidence and reasoning</text>
+  <rect x="820" y="210" width="42" height="18" rx="9" class="get"/><text x="832" y="223" class="method getT">GET</text>
+  <text x="870" y="223" class="path">/documents/:id/pages · /pages/:id</text>
+  <text x="870" y="238" class="muted">Page text</text>
+  <rect x="820" y="250" width="42" height="18" rx="9" class="get"/><text x="832" y="263" class="method getT">GET</text>
+  <text x="870" y="263" class="path">/documents/:id/chunks · /chunks/:id</text>
+  <text x="870" y="278" class="muted">Passages (page-sized chunks)</text>
+  <rect x="820" y="290" width="42" height="18" rx="9" class="get"/><text x="832" y="303" class="method getT">GET</text>
+  <text x="870" y="303" class="path">/search/chunks?q=</text>
+  <text x="870" y="318" class="muted">Semantic passage search</text>
+
+  <!-- Flow -->
+  <rect x="40" y="360" width="1120" height="270" class="flowBox"/>
+  <text x="60" y="388" class="title">Typical client flow</text>
+
+  <rect x="60" y="410" width="200" height="70" class="step"/>
+  <text x="72" y="434" class="stepText">1. Upload PDFs</text>
+  <text x="72" y="452" class="stepSub">POST /documents/upload</text>
+  <text x="72" y="468" class="stepSub">→ 200 with document ids</text>
+
+  <rect x="290" y="410" width="200" height="70" class="step"/>
+  <text x="302" y="434" class="stepText">2. Poll progress</text>
+  <text x="302" y="452" class="stepSub">GET /documents/:id every 4 s</text>
+  <text x="302" y="468" class="stepSub">percent, stage, ETA</text>
+
+  <rect x="520" y="410" width="200" height="70" class="step"/>
+  <text x="532" y="434" class="stepText">3. Inspect facts</text>
+  <text x="532" y="452" class="stepSub">GET /facts/document/:id</text>
+  <text x="532" y="468" class="stepSub">GET /relationships/document/:id</text>
+
+  <rect x="750" y="410" width="200" height="70" class="step"/>
+  <text x="762" y="434" class="stepText">4. Ask with proof</text>
+  <text x="762" y="452" class="stepSub">POST /ask</text>
+  <text x="762" y="468" class="stepSub">answer + [S#] citations</text>
+
+  <rect x="980" y="410" width="160" height="70" class="step"/>
+  <text x="992" y="434" class="stepText">5. The four cases</text>
+  <text x="992" y="452" class="stepSub">GET /showcase</text>
+  <text x="992" y="468" class="stepSub">evidence + reasoning</text>
+
+  <path d="M260 445 L290 445" class="line"/>
+  <path d="M490 445 L520 445" class="line"/>
+  <path d="M720 445 L750 445" class="line"/>
+  <path d="M950 445 L980 445" class="line"/>
+
+  <text x="60" y="520" class="title">Conventions</text>
+  <text x="60" y="544" class="muted">• Ids are MongoDB ObjectIds; invalid ids return 400, unknown ids 404, provider failures 500 with the message.</text>
+  <text x="60" y="564" class="muted">• Evidence travels everywhere: documentId · pageId · pageNumber · chunkId · sourceText on every fact, relationship, citation and case.</text>
+  <text x="60" y="584" class="muted">• Document status: uploaded → processing → processed | failed. A failed or interrupted document resumes from its last finished page.</text>
+  <text x="60" y="604" class="muted">• Classification is deterministic and explained: comparisonSignals, reason, keySimilarities, keyDifferences, optional adjudication note.</text>
+</svg>

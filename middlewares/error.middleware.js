@@ -6,7 +6,9 @@ const errorMiddleware = (error, req, res, next) => {
   const statusCode = error instanceof multer.MulterError ? 400 : error.statusCode || 500;
   const message = error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE"
     ? "File size must not exceed 200 MB"
-    : error.message || "Internal server error";
+    : error instanceof multer.MulterError && (error.code === "LIMIT_FILE_COUNT" || error.code === "LIMIT_UNEXPECTED_FILE")
+      ? "Upload at most 20 PDF files per request in the document field"
+      : error.message || "Internal server error";
   return ApiResponse.error(res, statusCode, message);
 };
 

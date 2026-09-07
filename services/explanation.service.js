@@ -15,8 +15,12 @@ const buildRelationshipExplanation = ({ factA, factB, relationshipType, confiden
   const evidenceAvailable = evidence.every((item) => item.evidenceAvailable);
   const keySimilarities = [];
   const keyDifferences = [];
-  if (comparisonSignals.sameSubject) keySimilarities.push(`Both describe subject '${display(factA.normalizedSubject)}'.`);
-  if (comparisonSignals.samePredicate) keySimilarities.push(`Both describe metric '${display(factA.normalizedPredicate)}'.`);
+  if (comparisonSignals.adjudicated?.same) {
+    keySimilarities.push(`Subject '${display(factA.subject)}' / metric '${display(factA.predicate)}' and subject '${display(factB.subject)}' / metric '${display(factB.predicate)}' were judged equivalent${comparisonSignals.adjudicated.reason ? `: ${comparisonSignals.adjudicated.reason}` : "."}`);
+  } else {
+    if (comparisonSignals.sameSubject) keySimilarities.push(`Both describe subject '${display(factA.normalizedSubject)}'.`);
+    if (comparisonSignals.samePredicate) keySimilarities.push(`Both describe metric '${display(factA.normalizedPredicate)}'.`);
+  }
   if (comparisonSignals.samePeriod === true) keySimilarities.push(`Both refer to period '${display(factA.periodLabel)}'.`);
   if (comparisonSignals.sameScope === true) keySimilarities.push(`Both refer to scope '${display(factA.normalizedScope)}'.`);
   if (comparisonSignals.sameUnit === true) keySimilarities.push("Units are compatible.");
@@ -30,7 +34,9 @@ const buildRelationshipExplanation = ({ factA, factB, relationshipType, confiden
   if (comparisonSignals.sameUnit === false) keyDifferences.push(`Units differ: '${display(factA.normalizedUnit)}' versus '${display(factB.normalizedUnit)}'.`);
   if (comparisonSignals.sameCurrency === false) keyDifferences.push(`Currencies differ: '${display(factA.normalizedCurrency)}' versus '${display(factB.normalizedCurrency)}'.`);
   if (comparisonSignals.valuesEqualWithinTolerance === false) {
-    keyDifferences.push(`Normalized values differ by ${display(comparisonSignals.valueDifference)} (${display(comparisonSignals.percentageDifference)} relative difference).`);
+    keyDifferences.push(comparisonSignals.valueDifference !== null && comparisonSignals.valueDifference !== undefined
+      ? `Normalized values differ by ${display(comparisonSignals.valueDifference)} (${display(comparisonSignals.percentageDifference)} relative difference).`
+      : `Stated values differ: Fact A says '${display(factA.object ?? factA.value)}'; Fact B says '${display(factB.object ?? factB.value)}'.`);
   }
   if (!evidenceAvailable) keyDifferences.push("Evidence is unavailable for one or both facts.");
 

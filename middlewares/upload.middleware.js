@@ -13,7 +13,7 @@ const upload = multer({
       callback(null, `${Date.now()}-${Math.random().toString(36).slice(2)}.pdf`);
     },
   }),
-  limits: { fileSize: 200 * 1024 * 1024 },
+  limits: { fileSize: 200 * 1024 * 1024, files: 20 },
   fileFilter: (req, file, callback) => {
     const isPdf = file.mimetype === "application/pdf" && file.originalname.toLowerCase().endsWith(".pdf");
     callback(isPdf ? null : ApiError.badRequest("Only PDF files are allowed"), isPdf);

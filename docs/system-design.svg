@@ -1,0 +1,153 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <style>
+      .box { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.5; rx: 10; }
+      .group { fill: #f8fafc; stroke: #e2e8f0; stroke-width: 1.5; rx: 14; }
+      .title { font-size: 15px; font-weight: 700; fill: #0f172a; }
+      .label { font-size: 13px; fill: #0f172a; }
+      .muted { font-size: 12px; fill: #64748b; }
+      .stage { fill: #eef2ff; stroke: #c7d2fe; stroke-width: 1.5; rx: 8; }
+      .stageText { font-size: 12.5px; font-weight: 600; fill: #1e1b4b; }
+      .stageSub { font-size: 11px; fill: #4338ca; }
+      .store { fill: #ecfdf5; stroke: #a7f3d0; stroke-width: 1.5; rx: 10; }
+      .ext { fill: #fff7ed; stroke: #fed7aa; stroke-width: 1.5; rx: 10; }
+      .line { stroke: #475569; stroke-width: 1.6; fill: none; marker-end: url(#arrow); }
+      .dash { stroke: #94a3b8; stroke-width: 1.4; fill: none; stroke-dasharray: 5 4; marker-end: url(#arrow); }
+      .h1 { font-size: 20px; font-weight: 800; fill: #0f172a; }
+      .h2 { font-size: 12px; fill: #64748b; }
+    </style>
+  </defs>
+  <rect width="1200" height="720" fill="#ffffff"/>
+  <text x="40" y="40" class="h1">FactLayer — System Design</text>
+  <text x="40" y="62" class="h2">PDF in → grounded facts, cross-document relationships, cited answers out. One Node.js process; no queue or worker to operate.</text>
+
+  <!-- Client -->
+  <rect x="40" y="100" width="210" height="120" class="box"/>
+  <text x="60" y="126" class="title">React frontend</text>
+  <text x="60" y="150" class="label">TanStack Start + Query</text>
+  <text x="60" y="170" class="muted">Multi-PDF upload, progress,</text>
+  <text x="60" y="186" class="muted">Ask with proof, the four cases</text>
+  <text x="60" y="206" class="muted">Polls status every 4 s</text>
+
+  <!-- API -->
+  <rect x="310" y="100" width="290" height="120" class="box"/>
+  <text x="330" y="126" class="title">Express API</text>
+  <text x="330" y="150" class="label">routes → controllers → services</text>
+  <text x="330" y="170" class="muted">/api/documents · /api/facts · /api/ask</text>
+  <text x="330" y="186" class="muted">/api/relationships · /api/showcase · /health</text>
+  <text x="330" y="206" class="muted">Upload returns at once; work continues</text>
+
+  <path d="M250 160 L310 160" class="line"/>
+  <text x="258" y="150" class="muted">HTTPS</text>
+
+  <!-- Processor group -->
+  <rect x="40" y="260" width="1120" height="250" class="group"/>
+  <text x="60" y="288" class="title">In-process pipeline — resumable, per-document lease + heartbeat, several documents in parallel</text>
+
+  <!-- stages row 1: x = 60 + i*185, width 170 -->
+  <rect x="60" y="310" width="170" height="62" class="stage"/>
+  <text x="72" y="333" class="stageText">1. Parse PDF</text>
+  <text x="72" y="351" class="stageSub">pdf-parse, one page each</text>
+
+  <rect x="245" y="310" width="170" height="62" class="stage"/>
+  <text x="257" y="333" class="stageText">2. Chunk by page</text>
+  <text x="257" y="351" class="stageSub">one page ≤ 8,000 chars</text>
+
+  <rect x="430" y="310" width="170" height="62" class="stage"/>
+  <text x="442" y="333" class="stageText">3. Embed chunks</text>
+  <text x="442" y="351" class="stageSub">Pinecone inference, 1024-d</text>
+
+  <rect x="615" y="310" width="170" height="62" class="stage"/>
+  <text x="627" y="333" class="stageText">4. Primary entity</text>
+  <text x="627" y="351" class="stageSub">“the company” → real name</text>
+
+  <rect x="800" y="310" width="170" height="62" class="stage"/>
+  <text x="812" y="333" class="stageText">5. Extract (parallel)</text>
+  <text x="812" y="351" class="stageSub">MiniMax-M3, JSON, retries</text>
+
+  <rect x="985" y="310" width="170" height="62" class="stage"/>
+  <text x="997" y="333" class="stageText">6. Ground + validate</text>
+  <text x="997" y="351" class="stageSub">quote must be on the page</text>
+
+  <path d="M230 341 L245 341" class="line"/>
+  <path d="M415 341 L430 341" class="line"/>
+  <path d="M600 341 L615 341" class="line"/>
+  <path d="M785 341 L800 341" class="line"/>
+  <path d="M970 341 L985 341" class="line"/>
+
+  <!-- stages row 2, right to left -->
+  <rect x="985" y="410" width="170" height="62" class="stage"/>
+  <text x="997" y="433" class="stageText">7. Normalize + persist</text>
+  <text x="997" y="451" class="stageSub">units, currency, %, periods</text>
+
+  <rect x="800" y="410" width="170" height="62" class="stage"/>
+  <text x="812" y="433" class="stageText">8. Embed identities</text>
+  <text x="812" y="451" class="stageSub">subject | metric | period</text>
+
+  <rect x="615" y="410" width="170" height="62" class="stage"/>
+  <text x="627" y="433" class="stageText">9. Match</text>
+  <text x="627" y="451" class="stageSub">top-20, other documents</text>
+
+  <rect x="430" y="410" width="170" height="62" class="stage"/>
+  <text x="442" y="433" class="stageText">10. Adjudicate</text>
+  <text x="442" y="451" class="stageSub">LLM settles wording</text>
+
+  <rect x="245" y="410" width="170" height="62" class="stage"/>
+  <text x="257" y="433" class="stageText">11. Reconcile</text>
+  <text x="257" y="451" class="stageSub">rules + value tolerance</text>
+
+  <rect x="60" y="410" width="170" height="62" class="stage"/>
+  <text x="72" y="433" class="stageText">12. Explain</text>
+  <text x="72" y="451" class="stageSub">evidence + signals</text>
+
+  <path d="M1070 372 L1070 410" class="line"/>
+  <path d="M985 441 L970 441" class="line"/>
+  <path d="M800 441 L785 441" class="line"/>
+  <path d="M615 441 L600 441" class="line"/>
+  <path d="M430 441 L415 441" class="line"/>
+  <path d="M245 441 L230 441" class="line"/>
+
+  <path d="M455 220 L455 260" class="line"/>
+  <text x="465" y="246" class="muted">startDocumentProcessing(bytes)</text>
+
+  <!-- Storage / external row -->
+  <rect x="40" y="560" width="300" height="120" class="store"/>
+  <text x="60" y="586" class="title">MongoDB — source of truth</text>
+  <text x="60" y="608" class="label">documents · pages · chunks · facts</text>
+  <text x="60" y="626" class="label">relationships · extraction issues</text>
+  <text x="60" y="648" class="muted">Progress, lease, heartbeat on the document</text>
+  <text x="60" y="664" class="muted">Facts keep document, page, chunk, quote</text>
+
+  <rect x="370" y="560" width="270" height="120" class="store"/>
+  <text x="390" y="586" class="title">Pinecone — vectors</text>
+  <text x="390" y="608" class="label">factlayer namespace: chunk vectors</text>
+  <text x="390" y="626" class="label">facts namespace: identity vectors</text>
+  <text x="390" y="648" class="muted">llama-text-embed-v2 hosted, 1024-d</text>
+  <text x="390" y="664" class="muted">Index auto-created at startup</text>
+
+  <rect x="670" y="560" width="220" height="120" class="store"/>
+  <text x="690" y="586" class="title">AWS S3 — originals</text>
+  <text x="690" y="608" class="label">documents/&lt;id&gt;/original.pdf</text>
+  <text x="690" y="630" class="muted">First run uses uploaded bytes;</text>
+  <text x="690" y="646" class="muted">S3 is only read when a document</text>
+  <text x="690" y="662" class="muted">is resumed or reprocessed</text>
+
+  <rect x="920" y="560" width="240" height="120" class="ext"/>
+  <text x="940" y="586" class="title">MiniMax API — LLM</text>
+  <text x="940" y="608" class="label">MiniMax-M3, OpenAI-compatible</text>
+  <text x="940" y="630" class="muted">Extract · adjudicate · answer</text>
+  <text x="940" y="646" class="muted">JSON mode, 429 backoff</text>
+  <text x="940" y="662" class="muted">One function per call type</text>
+
+  <path d="M190 510 L190 560" class="line"/>
+  <text x="198" y="540" class="muted">reads / writes</text>
+  <path d="M505 510 L505 560" class="line"/>
+  <text x="513" y="540" class="muted">embed + query</text>
+  <path d="M780 510 L780 560" class="dash"/>
+  <text x="788" y="540" class="muted">resume only</text>
+  <path d="M1040 510 L1040 560" class="dash"/>
+  <text x="1048" y="540" class="muted">chat completions</text>
+</svg>

@@ -9,6 +9,8 @@ const chunkSchema = new mongoose.Schema(
     text: { type: String, required: true },
     tokenCount: { type: Number, required: true },
     vectorId: { type: String, required: true, unique: true, index: true },
+    extractionStatus: { type: String, enum: ["pending", "done", "failed", "skipped"], default: "pending", index: true },
+    factCount: { type: Number, default: 0 },
   },
   { timestamps: true },
 );

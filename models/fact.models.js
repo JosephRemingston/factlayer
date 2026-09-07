@@ -18,6 +18,8 @@ const factSchema = new mongoose.Schema(
     periodEnd: { type: Date, default: null },
     scope: { type: String, default: null, trim: true },
     sourceText: { type: String, required: true, trim: true },
+    // Canonical "subject | predicate | period | scope" string used for embedding-based matching.
+    matchText: { type: String, default: null },
     evidenceStart: { type: Number, default: null, min: 0 },
     evidenceEnd: { type: Number, default: null, min: 0 },
     confidence: { type: Number, required: true, min: 0, max: 1 },

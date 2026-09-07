@@ -23,15 +23,10 @@ const chunk = {
   text: "Revenue increased 25% to $100M in FY2024.",
 };
 
-const mockRequest = async (url, options) => {
-  const request = JSON.parse(options.body);
-  assert.match(request.messages[0].content, /metric value from a change or growth percentage/i);
+const mockModel = async (messages) => {
+  assert.match(messages[0].content, /metric value from a change or growth percentage/i);
   assert.match(buildExtractionPrompt(chunk), /Revenue increased 25% to \$100M/);
-  return {
-    ok: true,
-    async json() {
-      return {
-        choices: [{ message: { content: JSON.stringify({
+  return { content: JSON.stringify({
           facts: [
             {
               subject: "Company",
@@ -54,15 +49,11 @@ const mockRequest = async (url, options) => {
               confidence: 0.9,
             },
           ],
-        }) } }],
-      };
-    },
-  };
+        }) };
 };
 
 test("extracts metric and growth facts with evidence", async () => {
-  process.env.OPENAI_API_KEY = "test-key";
-  const facts = await extractFactsFromChunk(chunk, mockRequest);
+  const facts = await extractFactsFromChunk(chunk, mockModel);
   assert.equal(facts[0].value, 100000000);
   assert.equal(facts[1].value, 25);
   assert.equal(facts[1].valueType, "percentage");

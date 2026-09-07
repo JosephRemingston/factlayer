@@ -75,4 +75,13 @@ const normalizeFact = (fact) => {
   };
 };
 
-export { normalizeFact, normalizePredicate, normalizeScope, normalizeSubject };
+// Identity string used for embedding-based matching: who, which metric, when, and in what scope.
+// Values are deliberately excluded so that differing values for the same metric still match.
+const buildFactMatchText = (fact) => [
+  fact.normalizedSubject || fact.subject || "",
+  fact.normalizedPredicate || fact.predicate || "",
+  fact.periodLabel || fact.period || "",
+  fact.normalizedScope || fact.scope || "",
+].map((part) => String(part).trim()).filter(Boolean).join(" | ");
+
+export { normalizeFact, normalizePredicate, normalizeScope, normalizeSubject, buildFactMatchText };

@@ -1,383 +1,202 @@
-# FactLayer - Evidence-Grounded Fact Knowledge Layer
+# FactLayer
 
-FactLayer extracts meaningful facts from PDFs, normalizes them, finds semantically related facts across documents, and records evidence-grounded classifications such as corroboration, contradiction, contextual difference, and uncertainty.
+**A fact knowledge layer for PDFs.** Upload documents, and FactLayer extracts the facts inside them, keeps every fact tied to the exact page and sentence it came from, matches facts across documents, and explains whether they corroborate, contradict, or merely differ in context. Ask a question and get an answer with citations.
 
-## Problem
+Built for the Superjoin engineering intern assignment. Backend in this repo; the React frontend lives in [`../factlayer_frontend`](../factlayer_frontend).
 
-PDF extraction alone produces disconnected text and numbers. FactLayer turns those documents into a structured knowledge layer where each fact remains linked to its document, page, chunk, and original source text.
-
-This matters when wording differs. For example, `Revenue reached $120 million` and `The company generated USD 120M in sales` can be retrieved as candidate matches after normalization. Conversely, `FY2024 revenue was $100M` and `Q4 2024 revenue was $32M` can be retained as a contextual difference instead of being treated as an automatic contradiction.
-
-## Core Capabilities
-
-- PDF upload with filename, MIME type, extension, and size validation.
-- Temporary disk-backed upload handling followed by private AWS S3 storage.
-- Asynchronous processing with BullMQ, Redis, and a worker with concurrency `3`.
-- Page-level text extraction and deterministic chunking.
-- Chunk embeddings and semantic chunk retrieval through Pinecone.
-- Structured LLM fact extraction with source-text validation.
-- Flexible fact normalization for subjects, predicates, numbers, currencies, units, percentages, periods, dates, and scopes.
-- Fact embeddings and semantic fact retrieval through Pinecone.
-- Candidate matching using vector retrieval followed by deterministic compatibility checks.
-- Reconciliation into `corroborated`, `contradiction`, `contextual_difference`, or `uncertain`.
-- Evidence-grounded explanations with document, page, chunk, and source-text references.
-- APIs for documents, pages, chunks, facts, semantic search, and relationships.
-
-## Assignment Cases
-
-### Corroboration
-
-Document A: `FY2024 revenue reached $120 million.`
-
-Document B: `The company generated $120M in fiscal 2024.`
-
-After semantic retrieval and normalization, the system can see the same subject, metric, period, scope, currency, and value. When the normalized values are within the configured tolerance, the relationship is classified as `corroborated`.
-
-### Contradiction
-
-Document A: `Employee count was 4,200.`
-
-Document B: `The company had 5,100 employees.`
-
-When subject, predicate, period, scope, unit, and currency are compatible and normalized values differ materially, the relationship is classified as `contradiction`. Different periods or scopes are handled before this rule and are not automatically contradictions.
-
-### Contextual Difference
-
-Document A: `FY2024 revenue was $100M.`
-
-Document B: `Q4 2024 revenue was $32M.`
-
-The same metric can be present while the period differs. The system stores the period signal and classifies this as `contextual_difference`, rather than claiming the values conflict.
-
-### Extraction and Reasoning Ambiguity
-
-For `Revenue increased 25% to $100M`, the extraction prompt explicitly distinguishes the metric value from the change percentage: revenue is `$100M` and growth is `25%`. Extraction still depends on the LLM and source text, so ambiguous or unsupported responses can fail processing or result in an `uncertain` relationship. The implementation does not claim perfect extraction accuracy.
-
-## System Design
-
-The API request performs validation, creates the MongoDB document, streams the temporary upload into S3, queues a job, and returns. Parsing, embeddings, extraction, normalization, matching, reconciliation, and explanations run in the separate worker.
-
-```mermaid
-flowchart TD
-    Client[Client] --> API[Express API]
-    API --> Controllers[Controllers]
-    Controllers --> Mongo[(MongoDB)]
-    Controllers --> S3[(Private AWS S3)]
-    Controllers --> Queue[BullMQ Queue]
-    Queue --> Redis[(Redis)]
-    Redis --> Worker[Document Worker]
-    Worker --> S3Download[S3 Download]
-    S3Download --> PDF[PDF Parser]
-    PDF --> Pages[Page Records]
-    Pages --> Chunks[Chunk Service]
-    Chunks --> Mongo
-    Chunks --> ChunkEmbedding[Embedding Service]
-    ChunkEmbedding --> Pinecone[(Pinecone chunks namespace)]
-    Chunks --> Extraction[LLM Fact Extraction]
-    Extraction --> Normalization[Normalization Service]
-    Normalization --> MongoFacts[(MongoDB Facts)]
-    Normalization --> FactEmbedding[Fact Embeddings]
-    FactEmbedding --> PineconeFacts[(Pinecone facts namespace)]
-    PineconeFacts --> Comparison[Comparison Service]
-    MongoFacts --> Comparison
-    Comparison --> Reconciliation[Reconciliation Service]
-    Reconciliation --> Explanation[Explanation Service]
-    Explanation --> MongoRelationships[(MongoDB Relationships)]
-    MongoRelationships --> Controllers
-```
-
-## Component Responsibilities
-
-### Express API
-
-`index.js` configures CORS, JSON parsing, the document/fact/relationship/evidence routes, the health endpoint, and error middleware. It connects MongoDB and Redis before listening. There is no authentication or authorization middleware.
-
-### Controllers
-
-Controllers validate request parameters, call services or models, and return the shared `ApiResponse` envelope. They do not call Pinecone, S3, or the LLM directly.
-
-### Services
-
-- `document.service.js`: creates document metadata, uploads and downloads S3 objects, runs the worker ingestion pipeline, cleans prior generated records on retry, and updates document status.
-- `pdf.service.js`: extracts page-shaped text from a PDF buffer with `pdf-parse`.
-- `chunk.service.js`: normalizes whitespace and splits page text into deterministic chunks of approximately 1,200 characters.
-- `embedding.service.js`: creates OpenAI embeddings, upserts/deletes chunk and fact vectors, and queries Pinecone namespaces.
-- `extraction.service.js`: requests structured JSON fact output from the configured OpenAI Chat Completions model and validates evidence, required fields, and confidence.
-- `normalization.service.js`: creates raw-preserving canonical subject, predicate, value, unit, currency, percentage, period, and scope fields.
-- `comparison.service.js`: queries semantic fact candidates and filters self-matches, same-document pairs, low similarity, and incompatible metrics.
-- `reconciliation.service.js`: deterministically classifies candidate pairs and persists comparison signals and evidence.
-- `explanation.service.js`: builds summaries, detailed reasons, similarities, differences, confidence, and evidence references from existing fact data.
-- `evidence.service.js`: retrieves pages and chunks from MongoDB.
-- `search.service.js`: queries Pinecone and hydrates canonical facts or chunks from MongoDB in Pinecone rank order.
-
-### Models
-
-- `Document`: uploaded PDF metadata, S3 key, status, counts, and processing error.
-- `Page`: source-numbered extracted page text.
-- `Chunk`: page-linked text segments and chunk vector IDs.
-- `Fact`: raw extracted fields, normalized fields, confidence, and source references.
-- `Relationship`: canonical fact pair, classification, scores, signals, explanation, and evidence.
-
-### Queue and Worker
-
-The `document-processing` BullMQ queue carries `processDocument` jobs containing `{ documentId }`. Jobs have three attempts with exponential backoff beginning at one second. Completed jobs are retained for one hour or 100 jobs; failed jobs for one day or 1,000 jobs. The worker runs with concurrency `3`.
-
-### Storage
-
-MongoDB is the canonical structured store for documents, pages, chunks, facts, relationships, and processing errors. S3 stores the original PDF at `documents/{documentId}/original.pdf`. Pinecone is only the semantic retrieval layer: chunk vectors use `PINECONE_NAMESPACE` or `factlayer`, while fact vectors always use `facts`.
-
-## End-to-End Data Flow
-
-```mermaid
-flowchart TD
-    Upload[Multipart PDF upload] --> Validate[PDF field, MIME, extension, 200 MB limit]
-    Validate --> Document[Create MongoDB Document with ObjectId]
-    Document --> S3[Stream temporary file to S3]
-    S3 --> Job[Queue processDocument]
-    Job --> Redis[Redis]
-    Redis --> Worker[Worker]
-    Worker --> Download[Download S3 PDF]
-    Download --> Parse[Extract page text]
-    Parse --> PageRecords[Persist Pages]
-    PageRecords --> ChunkRecords[Persist Chunks]
-    ChunkRecords --> ChunkVectors[Embed and upsert chunk vectors]
-    ChunkRecords --> Facts[Extract facts per chunk]
-    Facts --> Normalize[Normalize and preserve raw fields]
-    Normalize --> FactRecords[Persist Facts]
-    FactRecords --> FactVectors[Embed and upsert fact vectors]
-    FactVectors --> Candidates[Semantic candidate retrieval]
-    Candidates --> Reconcile[Reconcile and explain]
-    Reconcile --> Relationships[Persist Relationships]
-    Relationships --> API[Relationship and evidence APIs]
-```
-
-## Evidence and Data Lineage
-
-```mermaid
-flowchart TD
-    PDF[Original PDF in S3] --> Document[Document]
-    Document --> Page[Page]
-    Page --> Chunk[Chunk]
-    Chunk --> Fact[Fact]
-    Fact --> Relationship[Relationship]
-    Relationship --> Explanation[Explanation and evidence]
-```
-
-`documentId`, `pageId`, and `chunkId` are retained so a fact can be navigated back to the exact source path. Fact evidence includes document ID, page ID, page number when available, chunk ID, and source text. Relationship explanations include one evidence entry for Fact A and one for Fact B. The model contains `evidenceStart` and `evidenceEnd`, but the current extraction code does not populate those offsets.
-
-## Data Model
-
-All Mongoose models use timestamps and therefore also return `createdAt` and `updatedAt`. Mongoose also returns `_id` and `__v`.
-
-### Document
-
-| Field | Type | Required | Constraints / meaning |
-|---|---|---:|---|
-| `_id` | ObjectId | Yes | MongoDB identifier |
-| `originalFileName` | String | Yes | Trimmed uploaded filename |
-| `s3Key` | String | Yes | Unique S3 object key |
-| `mimeType` | String | Yes | Enum: `application/pdf` |
-| `fileSize` | Number | Yes | Uploaded byte size |
-| `status` | String | Yes | `uploaded`, `processing`, `processed`, `failed`; indexed |
-| `pageCount` | Number | No | Default `0` |
-| `chunkCount` | Number | No | Default `0` |
-| `processingError` | String/null | No | Error message or `null` |
-
-### Page
-
-| Field | Type | Required | Constraints / meaning |
-|---|---|---:|---|
-| `_id` | ObjectId | Yes | Page identifier |
-| `documentId` | ObjectId | Yes | Refers to `Document`; indexed |
-| `pageNumber` | Number | Yes | Source page number |
-| `text` | String | No | Defaults to empty string |
-
-Unique index: `{ documentId: 1, pageNumber: 1 }`.
-
-### Chunk
-
-| Field | Type | Required | Constraints / meaning |
-|---|---|---:|---|
-| `_id` | ObjectId | Yes | Chunk identifier |
-| `documentId` | ObjectId | Yes | Refers to `Document`; indexed |
-| `pageId` | ObjectId | Yes | Refers to `Page`; indexed |
-| `pageNumber` | Number | Yes | Copied source page number |
-| `chunkIndex` | Number | Yes | Deterministic order within page |
-| `text` | String | Yes | Chunk text |
-| `tokenCount` | Number | Yes | Whitespace word count, not tokenizer tokens |
-| `vectorId` | String | Yes | Unique and indexed vector ID |
-
-Unique index: `{ documentId: 1, pageNumber: 1, chunkIndex: 1 }`.
-
-### Fact
-
-Fact references are `documentId`, `pageId`, and `chunkId`, all required ObjectIds. Required semantic fields are `subject`, `predicate`, `sourceText`, `confidence` (`0..1`), and `extractionModel`.
-
-| Field group | Fields and types |
+| | |
 |---|---|
-| Identity/evidence | `documentId`, `pageId`, `chunkId`: ObjectId required; `pageNumber`: nullable Number; `sourceText`: required String; `evidenceStart`, `evidenceEnd`: nullable Number with minimum `0` |
-| Raw extraction | `subject`, `predicate`: required String; `object`, `value`, `rawValue`: Mixed nullable; `valueType`, `unit`, `currency`, `period`, `scope`, `rawSubject`, `rawPredicate`, `rawUnit`, `rawCurrency`, `rawPeriod`, `rawScope`: nullable String |
-| Period | `periodStart`, `periodEnd`, `normalizedPeriodStart`, `normalizedPeriodEnd`: nullable Date; `periodType`, `periodLabel`: nullable String |
-| Normalized fields | `normalizedSubject`, `normalizedPredicate`, `normalizedUnit`, `normalizedCurrency`, `normalizedScope`: nullable String; `normalizedObject`: Mixed nullable; `normalizedValue`, `normalizedPercentage`: nullable Number |
-| Quality | `confidence`: required Number `0..1`; `extractionModel`: required String |
+| **Stack** | Node.js 20 · Express 5 · MongoDB (Mongoose) · Pinecone (vectors + hosted embeddings) · AWS S3 · MiniMax-M3 · React (TanStack Start) |
+| **Tests** | `npm test` — 31 unit tests covering chunking, grounding, normalization, comparison, adjudication, reconciliation |
+| **Video demo** | _Add link here_ |
+| **Live docs** | [API reference](API.md) · [System design](docs/system-design.svg) · [API design](docs/api-design.svg) |
 
-Indexes exist on `documentId`, `pageId`, `chunkId`, `normalizedSubject`, `normalizedPredicate`, `normalizedCurrency`, and compound `{ documentId: 1, chunkId: 1 }`.
+---
 
-### Relationship
+## What it does
 
-| Field | Type | Required | Constraints / meaning |
-|---|---|---:|---|
-| `factA` | ObjectId | Yes | Refers to `Fact` |
-| `factB` | ObjectId | Yes | Refers to `Fact` |
-| `relationshipType` | String | Yes | Enum listed below; default `candidate` |
-| `similarityScore` | Number | Yes | `0..1`, Pinecone similarity |
-| `matchingScore` | Number | Yes | `0..1`, compatibility-adjusted score |
-| `confidence` | Number | Yes | `0..1` |
-| `reason` | String | Yes | Deterministic reconciliation reason |
-| `context` | String/null | No | Context difference description |
-| `comparisonSignals` | Mixed | No | Subject, predicate, period, scope, unit, currency, value and semantic signals |
-| `evidence` | Array of Mixed | No | Evidence entries for Fact A and Fact B |
-| `summary` | String/null | No | Classification summary |
-| `detailedReason` | String/null | No | Evidence-grounded explanation |
-| `classification` | String/null | No | Mirrors the final relationship classification |
-| `keyDifferences` | Array of String | No | Explainable differences |
-| `keySimilarities` | Array of String | No | Explainable similarities |
-| `status` | String | No | Default `pending`, indexed; worker sets `reviewed` after reconciliation |
+1. **Extracts grounded facts.** Each page goes to the model with a strict schema. Every returned fact must quote a span that actually exists on that page, or it is rejected and logged as evidence of the failure.
+2. **Links facts across documents.** Facts are embedded by identity ("Delhivery | revenue | FY24 | consolidated"), matched across documents, and classified by deterministic rules: `corroborated`, `contradiction`, `contextual_difference`, or `uncertain`. Near-miss wording ("the company" vs "Delhivery", "revenue from operations" vs "revenue from services") is settled by an LLM adjudicator before the rules run.
+3. **Answers with proof.** `POST /api/ask` returns a short answer where every claim carries a `[S#]` citation resolving to the document name, page number, and verbatim quote, and points out when sources disagree.
+4. **Shows its work.** `GET /api/showcase` and the `/cases` page surface the best real example of each assignment case, including the extraction failures the pipeline caught and how it handled them.
 
-Unique index: `{ factA: 1, factB: 1 }`.
+---
 
-## Vector Database
+## The four cases
 
-Chunks are embedded from chunk text and use IDs `chunk_{documentId}_{pageNumber}_{chunkIndex}`. Chunk metadata contains `documentId`, `pageId`, `pageNumber`, `chunkId`, `chunkIndex`, and text.
+The assignment asks for one example of each. FactLayer selects them automatically from whatever documents are loaded, so they are real, not hand-picked.
 
-Facts are embedded from `sourceText` and use IDs `fact_{factId}`. Fact metadata contains fact/document/page/chunk IDs, subject, predicate, value, period, scope, and normalized comparison fields.
+| # | Case | How FactLayer produces it | Where to see it |
+|---|---|---|---|
+| 1 | **Corroborated across documents, expressed differently** | Fact-identity embeddings find the pair, the adjudicator confirms the wording means the same metric, reconciliation finds values within 1 percent tolerance. | `/cases` → case 1, `GET /api/showcase` |
+| 2 | **Genuine or likely contradiction** | Same subject, metric, and period; scope not contradicted; values differ beyond tolerance. Descriptive facts (a name, a status) contradict when their objects differ. | `/cases` → case 2 |
+| 3 | **Apparent contradiction explained by context** | Same metric, but period, scope, unit, or currency differs. Classified `contextual_difference` with the difference named, never as a contradiction. | `/cases` → case 3 |
+| 4 | **Extraction or reasoning failure, and its handling** | Every rejected candidate (evidence not on the page, missing value, bad confidence), every malformed JSON reply that had to be re-requested, and every skipped page is stored in `extractionissues` with the reason and the handling applied. | `/cases` → case 4, `extractionFailures` in `/api/showcase` |
 
-MongoDB remains the structured source of truth. Pinecone is queried to find semantic candidates, then the API hydrates the canonical MongoDB record. Pinecone matches without a valid MongoDB record are dropped.
+Each case shows both facts with document, page, value, period, scope, the quoted evidence, and the system's reasoning: comparison signals, key similarities, key differences, and any adjudicator note.
 
-## Asynchronous Processing and States
+---
 
-```mermaid
-stateDiagram-v2
-    [*] --> uploaded
-    uploaded --> processing: worker starts
-    processing --> processed: pipeline succeeds
-    processing --> failed: any pipeline error
-    failed --> processing: BullMQ retry
+## System design
+
+![System design](docs/system-design.svg)
+
+**One process.** The Express API stores the PDF in S3, records it in MongoDB, and starts processing in the same process from the uploaded bytes. The upload call returns immediately; the frontend polls `GET /api/documents/:id`, which reports stage, percentage, pages processed, facts so far, and an ETA.
+
+**The pipeline**, per document:
+
+| Stage | What happens | Why it is built this way |
+|---|---|---|
+| Parse and chunk | `pdf-parse` yields one record per page; a page is one chunk unless it exceeds 8,000 characters. Short pages with no digits are skipped. | Page-level chunks keep evidence page-accurate and cut model calls by two thirds versus paragraph chunks. |
+| Embed chunks | Pinecone-hosted `llama-text-embed-v2`, 1024 dimensions, batches of 64. | No separate embedding vendor or quota; the same key that stores vectors produces them. |
+| Primary entity | One model call on the opening pages identifies the organization the document is about. | Lets "the company", "we", and "the group" resolve to a real subject that can match across documents. |
+| Extract facts | 8 pages in parallel to MiniMax-M3 in JSON mode with a fixed schema; 429s back off, malformed JSON is re-requested once. | Facts persist per page, so an interrupted run resumes instead of restarting. |
+| Ground and validate | The quoted `sourceText` must exist on the page, ignoring punctuation, quote style, hyphenation, and number spacing. Facts need a value or an object. | Invented evidence never enters the store; rejections become case-4 evidence. |
+| Normalize | Subjects, predicates, magnitudes (crore, million, bn), currencies, percentages, fiscal periods, and scopes get canonical forms while raw values are kept. | Comparison works on canonical fields; the UI still shows the original wording. |
+| Match | Each fact's identity string is embedded and queried against other documents' facts, 8 queries in parallel; skipped entirely when no other document has facts. | Identity embeddings match "what is being measured", not sentence style. |
+| Adjudicate | Pairs with similarity ≥ 0.82 whose subject or metric strings differ are sent to the model in batches of 20 with a yes/no question. | Cheap way to bridge wording differences without loosening the deterministic rules. |
+| Reconcile and explain | Rules over period, scope, unit, currency, and value tolerance produce the classification, a reason, signals, and key similarities and differences. | Deterministic and inspectable; the model never decides the final label. |
+
+**Reliability.** Each document carries a processing lease with a heartbeat, so two server instances never process the same document. Interrupted documents resume on startup from their last finished page. `POST /api/documents/:id/reprocess` resumes a failed document, or restarts it with `?reset=true`.
+
+---
+
+## API design
+
+![API design](docs/api-design.svg)
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/documents/upload` | Upload 1 to 20 PDFs in the `document` field; each starts processing at once |
+| `GET /api/documents` · `GET /api/documents/:id` | List documents, or one document with its `progress` object |
+| `POST /api/documents/:id/reprocess` | Resume unfinished pages, or `?reset=true` to start over |
+| `GET /api/facts/document/:id` · `GET /api/facts/:id` | Facts with evidence links |
+| `GET /api/facts/search?q=` · `GET /api/search/chunks?q=` | Semantic search over facts or passages |
+| `GET /api/relationships/document/:id` · `GET /api/relationships/:id` | Classified relationships with reasoning |
+| `POST /api/ask` | Cited answer across all documents |
+| `GET /api/showcase` | The four cases with evidence |
+| `GET /api/documents/:id/pages` · `/chunks` · `GET /api/pages/:id` · `GET /api/chunks/:id` | Evidence text |
+| `GET /health` | Liveness |
+
+Every response uses `{ statusCode, message, data, success }`. Full request and response shapes, including the `progress` object and the answer citation format, are in [API.md](API.md).
+
+---
+
+## Data model
+
+| Collection | Holds | Evidence fields |
+|---|---|---|
+| `documents` | File metadata, status, stage, progress counters, primary entity, processing lease | `s3Key` |
+| `pages` | Page number and text | `documentId` |
+| `chunks` | Page-sized text, extraction status, fact count, vector id | `documentId`, `pageId`, `pageNumber` |
+| `facts` | Raw and normalized subject, predicate, value, unit, currency, period, scope; confidence; identity string for matching | `documentId`, `pageId`, `chunkId`, `pageNumber`, `sourceText` |
+| `relationships` | Pair of facts, classification, similarity and matching scores, comparison signals, reason, summary, key similarities and differences | Evidence entry for each fact |
+| `extractionissues` | Type, message, the rejected candidate or malformed output preview, and the handling applied | `documentId`, `chunkId`, `pageNumber` |
+
+MongoDB is the source of truth; Pinecone holds chunk vectors (namespace `factlayer`) and fact-identity vectors (namespace `facts`) and is only used to find candidates that are then hydrated from MongoDB.
+
+---
+
+## Engineering decisions and trade-offs
+
+- **In-process background work instead of a queue.** The project started with BullMQ and Redis. Removing them simplified running and debugging, and the per-document lease plus resumable stages preserved the two things the queue was providing: no double processing and recovery after a crash. A shared queue would return if the API needed to scale across machines.
+- **Deterministic classification, model-assisted matching.** The model extracts and adjudicates wording; rules decide corroboration and contradiction. That keeps every label explainable and testable.
+- **Evidence is mandatory.** A fact without a verbatim quote on its page is rejected rather than stored with lower confidence. This costs some recall (about 6 percent of candidates on the sample documents) and buys trust in everything that remains.
+- **Page-level chunks.** Fewer model calls and exact page citations, at the cost of coarser passage search results.
+- **Provider isolation.** Extraction, adjudication, and answering each go through one function in `services/extraction.service.js`; embeddings through one function per provider in `services/embedding.service.js`. Swapping MiniMax for Claude or Gemini, or Pinecone inference for another embedder, is a contained change.
+- **Rate limits are a first-class concern.** Retries honour provider-suggested delays, per-minute windows, and burst limits; concurrency is configurable per stage. On a MiniMax Coding Plan a 100-page document processes in about 3 minutes.
+
+---
+
+## Running locally
+
+**Requirements:** Node.js 20+, MongoDB, an S3 bucket, a Pinecone API key (the index is created automatically), and a MiniMax API key.
+
+```bash
+cp .env.example .env   # fill in MONGO_URI, AWS_*, PINECONE_API_KEY, MINIMAX_API_KEY
+npm install
+npm start              # API + processing on http://localhost:3000
 ```
 
-The HTTP upload returns after S3 storage and job creation; it does not wait for parsing, embeddings, LLM extraction, or reconciliation. A failed job is retried up to three attempts. Before retry processing, prior generated pages, chunks, facts, vectors, and relationships for that document are removed or replaced. Cleanup is not transactional, and same-document worker jobs are not locked or deduplicated.
+`npm run dev` runs the same with file watching. `npm test` runs the unit tests.
 
-## Technology Stack
+Frontend, in the sibling folder:
 
-| Technology | Purpose |
+```bash
+cd ../factlayer_frontend
+npm install
+npm run dev            # http://localhost:8080, API base configurable in the top-right setting
+```
+
+Then upload the three starter PDFs from `data/starter-datasets/delhivery/` in one go, watch the progress bars, and open **Cases** and **Ask**.
+
+**Environment variables** (see `.env.example`):
+
+| Variable | Meaning |
 |---|---|
-| Node.js | Backend runtime |
-| Express | HTTP API |
-| MongoDB | Canonical structured persistence |
-| Mongoose | MongoDB ODM and schemas |
-| AWS SDK v3 / S3 | Original PDF storage |
-| Multer | Multipart upload handling |
-| Redis | BullMQ connection backend |
-| BullMQ | Asynchronous document jobs and retries |
-| `pdf-parse` | PDF text extraction |
-| OpenAI embeddings API | Chunk and fact embeddings |
-| OpenAI Chat Completions API | Structured fact extraction |
-| Pinecone SDK | Semantic vector storage and retrieval |
-| dotenv | Environment configuration |
-| CORS | Cross-origin HTTP middleware |
+| `MONGO_URI` | MongoDB connection string |
+| `AWS_REGION`, `AWS_BUCKET_NAME`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Original PDF storage |
+| `PINECONE_API_KEY`, `PINECONE_INDEX_NAME`, `PINECONE_NAMESPACE`, `PINECONE_CLOUD`, `PINECONE_REGION` | Vector index; created with `EMBEDDING_DIMENSION` if missing |
+| `EMBEDDING_PROVIDER` (`pinecone` or `minimax`), `PINECONE_EMBEDDING_MODEL`, `MINIMAX_EMBEDDING_MODEL`, `EMBEDDING_DIMENSION` | Embedding model and dimension; must match the index |
+| `MINIMAX_API_KEY`, `MINIMAX_API_BASE`, `FACT_EXTRACTION_MODEL` | LLM for extraction, adjudication, and answers |
+| `PROCESSING_CONCURRENCY`, `EXTRACTION_CONCURRENCY`, `MATCHING_CONCURRENCY`, `EXTRACTION_REQUESTS_PER_MINUTE` | Parallelism per stage and optional pacing |
 
-## Key Design Decisions
+Keep `.env` out of git; it is ignored.
 
-- MongoDB is flexible enough for arbitrary fact types while preserving document/page/chunk relationships.
-- S3 keeps original PDFs outside MongoDB and uses `documents/{documentId}/original.pdf`.
-- BullMQ and Redis keep expensive parsing, embeddings, LLM calls, and reconciliation out of the upload request.
-- Pinecone handles semantic retrieval; it does not replace MongoDB.
-- Page and chunk identifiers preserve auditable evidence lineage.
-- Deterministic normalization and reconciliation run before any future probabilistic extension, making current classifications inspectable.
-- Raw fact fields are retained alongside normalized fields so normalization does not erase source representation.
-
-## Security and Error Handling
-
-- Credentials and connection strings are read from environment variables; `.env` is git-ignored.
-- S3 access is performed through the AWS SDK and no public S3 URLs are returned. Bucket privacy policy itself is external configuration and is not enforced in application code.
-- Uploads must use the `document` multipart field, `application/pdf` MIME type, and a `.pdf` filename; the limit is 200 MB. File content is not independently magic-number validated.
-- No authentication or authorization is implemented.
-- Errors use the API response envelope, but unknown Express routes are not converted by the error middleware.
-- Multer errors return `400`; invalid IDs and missing request fields return `400`; missing resources return `404`; provider and worker failures normally return `500` and may expose the underlying error message.
+---
 
 ## Testing
 
-Tests use Node's built-in `node:test` runner and run with `npm test`.
+`npm test` runs 31 tests with Node's built-in runner and no external services:
 
-- `tests/extraction.test.js`: PDF output shape, structured extraction, evidence validation, confidence, malformed output.
-- `tests/chunking.test.js`: deterministic ordering, page metadata, and no empty chunks.
-- `tests/normalization.test.js`: numbers, currencies, units, percentages, fiscal periods, aliases, scopes, raw preservation, idempotency.
-- `tests/comparison.test.js`: semantic candidate filtering, same-document/self-match prevention, canonical pair ordering.
-- `tests/reconciliation.test.js`: corroboration, contradiction, contextual difference, uncertainty, and missing evidence.
+- chunking determinism and page metadata
+- evidence grounding, including quote-style, hyphenation, and number-spacing tolerance, and rejection of altered evidence
+- unit, currency, percentage, and period normalization, including idempotence
+- candidate comparison, self and same-document rejection, value-type compatibility
+- adjudicator overrides and descriptive-fact contradictions
+- reconciliation outcomes for equal, contradictory, and context-differing facts
 
-There are no live API, MongoDB, Redis, S3, Pinecone, worker, or queue integration tests in the repository.
+End-to-end behaviour was verified by uploading the starter PDFs against live MongoDB, S3, Pinecone, and MiniMax.
 
-## Running Locally
+---
 
-Requirements: Node.js 20 or newer, MongoDB, Redis, an S3 bucket, a Pinecone index, an OpenAI API key, and reachable credentials/configuration for each service.
+## Limitations and next steps
 
-```sh
-cp .env.example .env
-npm install
-npm test
-npm run start-server
-npm run start-worker
-npm run dev
+- **Facts without a stated period** are classified `uncertain` when values differ, because a change over time cannot be told from a contradiction. Inferring periods from nearby headings and document dates is the next improvement.
+- **Adjudication is batched but still model-bound.** A per-document alias table for subsidiaries and segments would cut those calls.
+- **Passage search returns whole pages** since chunks are page-sized; a secondary paragraph index would sharpen it.
+- **No authentication** and open CORS; this is a prototype.
+- **Rate limits dominate speed.** Extraction time is set by the LLM plan, not the pipeline. A pay-as-you-go key or a paid Gemini or Claude key removes the burst limits.
+- **Single-process scaling.** Multiple API instances would need a shared queue again; the lease already prevents double processing.
+
+---
+
+## AI tools used
+
+The code was written with Claude Code (Claude Fable 5.1) as a pair programmer for design, implementation, debugging against live services, and documentation. MiniMax-M3 performs fact extraction, adjudication, and answer writing at runtime. Pinecone-hosted `llama-text-embed-v2` produces embeddings.
+
+---
+
+## Project structure
+
 ```
-
-`start-server` runs only the API. `start-worker` runs only the BullMQ worker. `dev` starts both with `concurrently`.
-
-Required environment variables are documented in `.env.example`: `PORT`, `MONGO_URI`, `REDIS_URL`, AWS settings, Pinecone settings, `EMBEDDING_MODEL`, `OPENAI_API_KEY`, `EMBEDDING_DIMENSION`, and `FACT_EXTRACTION_MODEL`. `VECTOR_DB_PROVIDER` is present in the example configuration but is not read by the current implementation. `EMBEDDING_DIMENSION` is also not validated by application code; the Pinecone index dimension must still match the embedding model externally.
-
-## API Overview
-
-| Method | Endpoint | Purpose |
-|---|---|---|
-| GET | `/health` | Health response |
-| POST | `/api/documents/upload` | Upload a PDF |
-| GET | `/api/documents/:documentId` | Get document metadata/status |
-| GET | `/api/documents/:documentId/pages` | List pages |
-| GET | `/api/documents/:documentId/chunks` | List chunks |
-| GET | `/api/pages/:pageId` | Get one page |
-| GET | `/api/chunks/:chunkId` | Get one chunk with source references |
-| GET | `/api/facts/document/:documentId` | List document facts |
-| GET | `/api/facts/search?q=...&topK=...` | Semantic fact search |
-| GET | `/api/facts/:factId` | Get one fact with evidence |
-| GET | `/api/search/chunks?q=...&topK=...` | Semantic chunk search |
-| GET | `/api/relationships/document/:documentId` | List document relationships |
-| GET | `/api/relationships/:relationshipId` | Get one relationship |
-
-See [API.md](API.md) for the complete contract.
-
-## Limitations
-
-- Scanned/image-only PDFs are not OCR-processed.
-- `pdf-parse` parsing still loads the downloaded PDF into memory after disk-backed upload/S3 storage.
-- Tables and unusual PDF layouts may extract poorly.
-- LLM extraction can fail or produce false positives; source-text validation reduces but does not eliminate that risk.
-- `tokenCount` is a whitespace word count rather than a model tokenizer count.
-- Evidence offsets are defined but not populated.
-- Semantic similarity is candidate discovery, not proof.
-- Ambiguous subjects and missing periods/scopes can lead to `uncertain` results or imperfect classification.
-- Worker jobs for the same document are not locked or deduplicated.
-- There is no pagination on collection endpoints.
-
-## Future Improvements
-
-- OCR and stronger table extraction.
-- Streaming PDF parsing or bounded-memory parser processing.
-- Document-level job locks and queue deduplication.
-- Authentication and authorization.
-- Pagination, filtering, and richer natural-language search.
-- Confidence calibration and evaluation datasets.
-- Stronger entity resolution and period-aware comparison.
-- Frontend visualization and timeline views.
-
-## Why This Architecture
-
-FactLayer separates original-file storage, canonical structured data, asynchronous processing, semantic retrieval, extraction, normalization, comparison, reconciliation, and evidence presentation. That separation keeps MongoDB authoritative, makes long-running work retryable, preserves source lineage, and allows retrieval or presentation layers to evolve without moving reasoning into the vector database or a graph store.
+index.js                      Express app; resumes interrupted documents on start
+routes/ controllers/          documents, facts, relationships, evidence, ask, showcase
+services/
+  document.service.js         resumable pipeline, lease and heartbeat, progress
+  pdf.service.js              page extraction
+  chunk.service.js            page-level chunking
+  extraction.service.js       MiniMax calls, grounding, validation, adjudication
+  normalization.service.js    canonical subjects, predicates, values, periods, scopes
+  embedding.service.js        Pinecone index, hosted embeddings, vector queries
+  comparison.service.js       candidate matching and adjudication pass
+  reconciliation.service.js   classification rules
+  explanation.service.js      human-readable reasoning
+  answer.service.js           cited answers
+  showcase.service.js         the four cases
+models/                       Mongoose schemas incl. ExtractionIssue
+utils/                        retry with provider-aware backoff, concurrency pool, normalizers
+tests/                        node --test suites
+docs/                         system-design.svg, api-design.svg
+data/starter-datasets/        sample PDFs
+```
