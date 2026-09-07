@@ -93,6 +93,25 @@ Inspect processing status:
 curl http://localhost:3000/api/documents/<document-id>
 ```
 
+Get the persisted pages for a document:
+
+```sh
+curl http://localhost:3000/api/documents/<document-id>/pages
+```
+
+Get the persisted chunks for a document:
+
+```sh
+curl http://localhost:3000/api/documents/<document-id>/chunks
+```
+
+Get one page or chunk directly:
+
+```sh
+curl http://localhost:3000/api/pages/<page-id>
+curl http://localhost:3000/api/chunks/<chunk-id>
+```
+
 Health check:
 
 ```sh
