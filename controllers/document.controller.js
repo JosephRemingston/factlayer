@@ -3,6 +3,8 @@ import ApiError from "../utils/ApiError.js";
 import ApiResponse from "../utils/ApiResponse.js";
 import {
   createDocument,
+  createDirectUpload,
+  confirmDirectUpload,
   getDocumentById,
   isDocumentBusy,
   listDocuments,
@@ -24,6 +26,34 @@ const uploadDocument = async (req, res) => {
   }
   const message = documents.length === 1 ? "Document uploaded successfully" : `${documents.length} documents uploaded successfully`;
   return ApiResponse.success(res, message, { document: documents[0], documents });
+};
+
+const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
+
+// Step 1 of a direct upload: register the files and hand back one presigned S3 URL each.
+const createUploadUrls = async (req, res) => {
+  const files = Array.isArray(req.body?.files) ? req.body.files : [];
+  if (!files.length) throw ApiError.badRequest("Provide files: [{ name, size }] to upload");
+  if (files.length > 20) throw ApiError.badRequest("Upload at most 20 PDF files per request");
+  const uploads = [];
+  for (const file of files) {
+    const name = String(file?.name || "").trim();
+    const size = Number(file?.size || 0);
+    if (!name.toLowerCase().endsWith(".pdf")) throw ApiError.badRequest(`Only PDF files are allowed: ${name || "unnamed file"}`);
+    if (!Number.isFinite(size) || size <= 0) throw ApiError.badRequest(`Missing file size for ${name}`);
+    if (size > MAX_UPLOAD_BYTES) throw ApiError.badRequest(`File size must not exceed 200 MB: ${name}`);
+    uploads.push(await createDirectUpload({ name, size }, req.owner));
+  }
+  return ApiResponse.success(res, "Upload URLs created successfully", { uploads });
+};
+
+// Step 2: the browser reports the PUT finished, and processing starts from the object in S3.
+const completeUpload = async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.documentId)) throw ApiError.badRequest("Invalid document ID");
+  const document = await confirmDirectUpload(req.params.documentId, req.owner);
+  if (!document) throw ApiError.notFound("Document not found");
+  startDocumentProcessing(document._id);
+  return ApiResponse.success(res, "Document upload completed successfully", { document: withProgress(document.toObject()) });
 };
 
 const getDocument = async (req, res) => {
@@ -50,4 +80,4 @@ const reprocessDocument = async (req, res) => {
   return ApiResponse.success(res, reset ? "Document reprocessing started" : "Document processing resumed", { document: { ...document, status: "processing" } });
 };
 
-export { uploadDocument, getDocument, getDocuments, reprocessDocument };
+export { uploadDocument, createUploadUrls, completeUpload, getDocument, getDocuments, reprocessDocument };

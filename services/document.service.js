@@ -1,4 +1,5 @@
-import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
+import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import fsPromises from "node:fs/promises";
 import s3Client from "../configs/s3.js";
 import Document from "../models/document.models.js";
@@ -104,6 +105,43 @@ const createDocument = async (file, owner = DEFAULT_OWNER) => {
   } finally {
     if (file.path) await fsPromises.unlink(file.path).catch(() => {});
   }
+};
+
+/**
+ * Registers a document and returns a URL the browser can PUT the PDF to directly. Sending file bytes
+ * through the API caps the upload at whatever request-body limit the host imposes (4.5 MB on Vercel,
+ * for instance); going straight to S3 removes that ceiling and keeps large PDFs off the API entirely.
+ */
+const createDirectUpload = async (file, owner = DEFAULT_OWNER) => {
+  const document = await new Document({
+    owner,
+    originalFileName: file.name,
+    s3Key: "pending",
+    mimeType: "application/pdf",
+    fileSize: file.size,
+    status: "uploaded",
+  }).save();
+  document.s3Key = `documents/${document._id.toString()}/original.pdf`;
+  await document.save();
+  const uploadUrl = await getSignedUrl(
+    s3Client,
+    new PutObjectCommand({ Bucket: bucket(), Key: document.s3Key, ContentType: "application/pdf" }),
+    { expiresIn: Number(process.env.UPLOAD_URL_TTL_SECONDS || 900) },
+  );
+  return { document: document.toObject(), uploadUrl, headers: { "Content-Type": "application/pdf" } };
+};
+
+/** Confirms the browser's direct upload landed in S3, then starts processing. */
+const confirmDirectUpload = async (documentId, owner) => {
+  const document = await Document.findOne({ _id: documentId, owner });
+  if (!document) return null;
+  const head = await s3Client.send(new HeadObjectCommand({ Bucket: bucket(), Key: document.s3Key })).catch(() => null);
+  if (!head) throw new Error("The file was not found in storage; upload it to the returned URL before confirming");
+  if (head.ContentLength && head.ContentLength !== document.fileSize) {
+    document.fileSize = head.ContentLength;
+    await document.save();
+  }
+  return document;
 };
 
 // Removes everything derived from a document (vectors, relationships, facts, chunks, pages).
@@ -411,6 +449,8 @@ const markDocumentFailed = async (documentId, message) => Document.findOneAndUpd
 
 export {
   createDocument,
+  createDirectUpload,
+  confirmDirectUpload,
   uploadDocumentToS3,
   getS3ObjectBuffer,
   processDocument,

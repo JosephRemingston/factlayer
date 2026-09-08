@@ -25,10 +25,10 @@ const isAllowedOrigin = (origin) => {
 };
 
 const corsOptions = {
-  origin: (origin, callback) => callback(null, isAllowedOrigin(origin)),
-  credentials: true,
+  origin: "*",
+  credentials: false,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "x-factlayer-user", "ngrok-skip-browser-warning"],
+  allowedHeaders: ["Content-Type", "x-factlayer-user", "ngrok-skip-browser-warning" , "Access-Control-Allow-Origin"],
   exposedHeaders: ["X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "Retry-After"],
   maxAge: 86400,
 };

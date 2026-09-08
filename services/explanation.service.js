@@ -1,5 +1,17 @@
 const display = (value) => value === null || value === undefined || value === "" ? "unavailable" : String(value);
 
+// Differences are read by people, so show a compact magnitude and a percentage rather than raw floats.
+const displayNumber = (value) => {
+  if (typeof value !== "number" || !Number.isFinite(value)) return display(value);
+  const magnitude = Math.abs(value);
+  if (magnitude >= 1e9) return `${(value / 1e9).toFixed(2)} billion`;
+  if (magnitude >= 1e6) return `${(value / 1e6).toFixed(2)} million`;
+  if (magnitude >= 1000) return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  return String(Number(value.toFixed(4)));
+};
+
+const displayPercent = (value) => (typeof value === "number" && Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : display(value));
+
 const buildEvidenceReference = (fact, label) => ({
   fact: label,
   documentId: fact.documentId ?? null,
@@ -35,7 +47,7 @@ const buildRelationshipExplanation = ({ factA, factB, relationshipType, confiden
   if (comparisonSignals.sameCurrency === false) keyDifferences.push(`Currencies differ: '${display(factA.normalizedCurrency)}' versus '${display(factB.normalizedCurrency)}'.`);
   if (comparisonSignals.valuesEqualWithinTolerance === false) {
     keyDifferences.push(comparisonSignals.valueDifference !== null && comparisonSignals.valueDifference !== undefined
-      ? `Normalized values differ by ${display(comparisonSignals.valueDifference)} (${display(comparisonSignals.percentageDifference)} relative difference).`
+      ? `Values differ by ${displayNumber(comparisonSignals.valueDifference)}, a ${displayPercent(comparisonSignals.percentageDifference)} relative difference.`
       : `Stated values differ: Fact A says '${display(factA.object ?? factA.value)}'; Fact B says '${display(factB.object ?? factB.value)}'.`);
   }
   if (!evidenceAvailable) keyDifferences.push("Evidence is unavailable for one or both facts.");
