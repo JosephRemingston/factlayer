@@ -2,78 +2,203 @@
 
 **A fact knowledge layer for PDFs.** Upload documents, and FactLayer extracts the facts inside them, keeps every fact tied to the exact page and sentence it came from, matches facts across documents, and explains whether they corroborate, contradict, or merely differ in context. Ask a question and get an answer with citations.
 
-Built for the Superjoin engineering intern assignment. Backend in this repo; the React frontend lives in [`../factlayer_frontend`](../factlayer_frontend).
+Built for the Superjoin engineering intern assignment.
 
 | | |
 |---|---|
-| **Stack** | Node.js 20 · Express 5 · MongoDB (Mongoose) · Pinecone (vectors + hosted embeddings) · AWS S3 · MiniMax-M3 · React (TanStack Start) |
-| **Tests** | `npm test` — 53 unit tests covering chunking, grounding, normalization, comparison, adjudication, reconciliation, workspaces, provider failover, rate limits, CORS, PDF runtime portability |
-| **Video demo** | _Add link here_ |
-| **Live docs** | [API reference](API.md) · [System design](docs/system-design.svg) · [API design](docs/api-design.svg) |
+| **Live app** | https://factlyerfrontend.vercel.app/ |
+| **Video demo** | [3-minute walkthrough](https://drive.google.com/file/d/1jyWeNXmoHA19NYgqz-H0asjIIY6ZJUTa/view?usp=sharing) |
+| **Frontend repository** | [JosephRemingston/rausch-round](https://github.com/JosephRemingston/rausch-round) |
+| **Stack** | Node.js 20 · Express 5 · MongoDB · Pinecone · AWS S3 · MiniMax-M3 with Gemini fallback · React (TanStack Start) |
+| **Tests** | `npm test` — 53 unit tests, no external services required |
+| **Documents** | [API reference](API.md) · [System design](docs/system-design.svg) · [API design](docs/api-design.svg) |
 
 ---
 
 ## What it does
 
-1. **Extracts grounded facts.** Each page goes to the model with a strict schema. Every returned fact must quote a span that actually exists on that page, or it is rejected and logged as evidence of the failure.
-2. **Links facts across documents.** Facts are embedded by identity ("Delhivery | revenue | FY24 | consolidated"), matched across documents, and classified by deterministic rules: `corroborated`, `contradiction`, `contextual_difference`, or `uncertain`. Near-miss wording ("the company" vs "Delhivery", "revenue from operations" vs "revenue from services") is settled by an LLM adjudicator before the rules run.
-3. **Answers with proof.** `POST /api/ask` returns a short answer where every claim carries a `[S#]` citation resolving to the document name, page number, and verbatim quote, and points out when sources disagree.
-4. **Shows its work.** `GET /api/showcase` and the `/cases` page surface the best real example of each assignment case, including the extraction failures the pipeline caught and how it handled them.
+1. **Extracts grounded facts.** Each page goes to the model with a strict schema. Every returned fact must quote a span that actually exists on that page, or it is rejected and recorded as evidence of the failure.
+2. **Links facts across documents.** Facts are embedded by identity ("Delhivery | revenue | FY24 | consolidated"), matched across documents, and classified by deterministic rules. Near-miss wording is settled by an LLM adjudicator before the rules run.
+3. **Answers with proof.** `POST /api/ask` returns a short answer where every claim carries a `[S#]` citation resolving to the document name, page number and verbatim quote.
+4. **Shows its work.** `GET /api/showcase` and the Cases page surface the best real example of each assignment case, including the extraction failures the pipeline caught.
 
 ---
 
-## Workspaces
+## Setup and Run Instructions
 
-Anyone opening the app enters a name, and everything they upload lives under it. Close the tab, come back later, even from another browser, enter the same name and the documents, facts and relationships are exactly as they were. The name travels on every request as `x-factlayer-user`; documents, facts, relationships, extraction issues and Pinecone namespaces are all scoped by it, so one person's documents never appear in another's search, answers or cases.
+**Requirements:** Node.js 20 or newer, MongoDB, an AWS S3 bucket, a Pinecone API key, and a MiniMax API key. A Gemini API key is optional but recommended, since the two providers cover each other's rate limits.
 
-It is deliberately not a login. There is no password, and anyone entering the same name opens that workspace; the sign-in screen says so. It exists so a reviewer can pick up where they left off, not to protect data. Requests with no name land in the `demo` workspace, which holds the sample documents.
+```bash
+git clone https://github.com/JosephRemingston/factlayer.git
+cd factlayer
+npm install
+cp .env.example .env      # then fill in the values below
+npm start                 # API and processing on http://localhost:3000
+```
+
+`npm run dev` runs the same with file watching, and `npm test` runs the unit tests.
+
+**Required environment variables**
+
+| Variable | Purpose |
+|---|---|
+| `MONGO_URI` | MongoDB connection string |
+| `AWS_REGION`, `AWS_BUCKET_NAME`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Original PDF storage |
+| `PINECONE_API_KEY`, `PINECONE_INDEX_NAME` | Vector index; created automatically at `EMBEDDING_DIMENSION` if missing |
+| `MINIMAX_API_KEY` | Primary model for extraction, adjudication and answers |
+| `GEMINI_API_KEY` | Fallback model, used automatically while MiniMax is rate limited |
+
+**Optional tuning**, with defaults in `.env.example`: `EMBEDDING_PROVIDER`, `EMBEDDING_DIMENSION`, `LLM_PROVIDER`, `FACT_EXTRACTION_MODEL`, `GEMINI_MODEL`, `PROCESSING_CONCURRENCY`, `EXTRACTION_CONCURRENCY`, `MATCHING_CONCURRENCY`, `ASK_RATE_MAX`, `UPLOAD_RATE_MAX`, `ALLOWED_ORIGINS`, `UPLOAD_DIR`.
+
+One-time S3 setup so the browser can upload directly to storage:
+
+```bash
+node scripts/configure-s3-cors.mjs
+```
+
+**Frontend**
+
+```bash
+git clone https://github.com/JosephRemingston/rausch-round.git
+cd rausch-round
+npm install
+echo "VITE_API_BASE=http://localhost:3000" > .env
+npm run dev               # http://localhost:8080
+```
+
+Open the app, enter any name to create a workspace, and upload the sample PDFs from `data/starter-datasets/`. The `delhivery/` set produces all four required cases. `india-macroeconomy/` is a harder second set where three institutions describe the same economy.
+
+**Deploying.** The frontend has a `vercel.json` and deploys to Vercel as-is; set `VITE_API_BASE` to your API URL. The backend needs a host that keeps a process alive, such as Render, Railway, Fly.io or a VM, because it keeps working for minutes after the upload response returns. See [Limitations](#limitations-and-next-steps) for why serverless does not fit.
 
 ---
 
-## The four cases
+## Video Demo
 
-The assignment asks for one example of each. FactLayer selects them automatically from whatever documents are loaded, so they are real, not hand-picked.
+**[Watch the 3-minute demo](https://drive.google.com/file/d/1jyWeNXmoHA19NYgqz-H0asjIIY6ZJUTa/view?usp=sharing)** — a PDF being processed, and each of the four required cases with its evidence.
 
-| # | Case | How FactLayer produces it | Where to see it |
-|---|---|---|---|
-| 1 | **Corroborated across documents, expressed differently** | Fact-identity embeddings find the pair, the adjudicator confirms the wording means the same metric, reconciliation finds values within 1 percent tolerance. | `/cases` → case 1, `GET /api/showcase` |
-| 2 | **Genuine or likely contradiction** | Same subject, metric, and period; scope not contradicted; values differ beyond tolerance. Descriptive facts (a name, a status) contradict when their objects differ. | `/cases` → case 2 |
-| 3 | **Apparent contradiction explained by context** | Same metric, but period, scope, unit, or currency differs. Classified `contextual_difference` with the difference named, never as a contradiction. | `/cases` → case 3 |
-| 4 | **Extraction or reasoning failure, and its handling** | Every rejected candidate (evidence not on the page, missing value, bad confidence), every malformed JSON reply that had to be re-requested, and every skipped page is stored in `extractionissues` with the reason and the handling applied. | `/cases` → case 4, `extractionFailures` in `/api/showcase` |
-
-Each case shows both facts with document, page, value, period, scope, the quoted evidence, and the system's reasoning: comparison signals, key similarities, key differences, and any adjudicator note.
+The same examples are reproducible live at https://factlyerfrontend.vercel.app/ under the **Cases** tab, which is generated from whatever documents a workspace holds rather than hard-coded.
 
 ---
 
-## System design
+## Approach
+
+### The problem, restated
+
+A PDF gives you text. What you actually want is: *what does this document claim, where exactly does it say so, and does anything else I have agree or disagree?* Every decision below follows from treating **evidence as mandatory** rather than as a nice-to-have.
+
+### Architecture
 
 ![System design](docs/system-design.svg)
 
-**One process.** The Express API stores the PDF in S3, records it in MongoDB, and starts processing in the same process from the uploaded bytes. The upload call returns immediately; the frontend polls `GET /api/documents/:id`, which reports stage, percentage, pages processed, facts so far, and an ETA.
+Upload stores the PDF in S3 and returns immediately. Processing continues in the same Node process and is resumable: pages and chunks are written once, every chunk records its own extraction status, and facts are persisted per page. A crash, restart or rate-limit failure resumes from the last finished page instead of restarting the document.
 
-**The pipeline**, per document:
+The pipeline, per document:
 
-| Stage | What happens | Why it is built this way |
+| Stage | What happens |
+|---|---|
+| Parse and chunk | One record per page; a page is one chunk unless it exceeds 8,000 characters. Boilerplate pages are skipped. |
+| Embed chunks | Pinecone-hosted `llama-text-embed-v2`, 1024 dimensions, batched by estimated tokens |
+| Primary entity | One model call on the opening pages identifies the organization the document is about |
+| Extract facts | 12 pages in parallel, JSON mode, fixed schema |
+| Ground and validate | The quoted span must exist on the page, or the fact is rejected and recorded |
+| Normalize | Canonical subject, predicate, magnitude, currency, percentage, period and scope, with raw values preserved |
+| Match | Each fact's identity string is queried against other documents' facts, 16 queries in parallel |
+| Adjudicate | Strongly similar pairs whose wording differs go to the model in batches of 20 |
+| Reconcile and explain | Deterministic rules produce the classification, reason, signals and differences |
+
+### How the four cases are produced
+
+| Case | Mechanism |
+|---|---|
+| Corroborated, expressed differently | Identity embeddings find the pair, the adjudicator confirms the wording means the same metric, values agree within 1 percent |
+| Genuine contradiction | Same subject, metric and period, scope not contradicted, values differ beyond tolerance |
+| Explained by context | Same metric, but period, scope, unit or currency differs; never reported as a contradiction |
+| Extraction failure | Every rejected candidate, repaired reply and skipped page is stored with its reason and handling |
+
+Real examples from the sample set, selected automatically by `GET /api/showcase`:
+
+- **Corroborated.** "Amit Agarwal is the Chief Financial Officer of our Company" (prospectus, page 97) against "Amit Agarwal, Chief Financial Officer of Delhivery Limited" (annual report, page 50). Different subject wording, joined by the adjudicator.
+- **Contradiction.** Adjusted EBITDA for FY23: ₹(217) crore in the Q4 presentation, page 13, against ₹(4,038.66) million in the annual report, page 37. Same metric, same period, values differ by 46 percent.
+- **Contextual difference.** Total assets of ₹45,977.98 million as at March 2021 against ₹114,530.20 million as at March 2024. Same metric, different period, correctly not a contradiction.
+
+### Measured results
+
+Three sample PDFs, 227 pages, on live infrastructure:
+
+| Metric | Value |
+|---|---|
+| Facts extracted | 2,812 |
+| Relationships classified | 790 — 98 corroborated, 6 contradictions, 531 contextual, 112 uncertain |
+| Relationships that exist only because of LLM adjudication | 131 |
+| Extraction failures caught and recorded | 208 |
+| Pages that failed extraction | 0 |
+| Answer latency | 6.7 to 9.2 seconds |
+
+### Decisions and trade-offs
+
+Each of these was measured rather than assumed.
+
+**Page-level chunks instead of 1,200-character chunks.** Chunk size drives the model-call count, which dominates both cost and time.
+
+| | 1,200 chars | Page level |
 |---|---|---|
-| Parse and chunk | `pdf-parse` yields one record per page; a page is one chunk unless it exceeds 8,000 characters. Short pages with no digits are skipped. | Page-level chunks keep evidence page-accurate and cut model calls by two thirds versus paragraph chunks. |
-| Embed chunks | Pinecone-hosted `llama-text-embed-v2`, 1024 dimensions. Batches are sized by estimated tokens, and a process-wide limiter holds total spend under the provider's per-minute cap. | No separate embedding vendor or quota. Page-sized chunks are large, so a fixed batch count would exceed the cap once two documents ran at once. |
-| Primary entity | One model call on the opening pages identifies the organization the document is about. | Lets "the company", "we", and "the group" resolve to a real subject that can match across documents. |
-| Extract facts | 12 pages in parallel in JSON mode with a fixed schema; a rate-limited provider hands the page to the other one and a call waits rather than dropping the page, malformed JSON is re-requested once. | Facts persist per page, so an interrupted run resumes instead of restarting. Two providers let the pool run wider without stalling. |
-| Ground and validate | The quoted `sourceText` must exist on the page, ignoring punctuation, quote style, hyphenation, and number spacing. Facts need a value or an object. | Invented evidence never enters the store; rejections become case-4 evidence. |
-| Normalize | Subjects, predicates, magnitudes (crore, million, bn), currencies, percentages, fiscal periods, and scopes get canonical forms while raw values are kept. | Comparison works on canonical fields; the UI still shows the original wording. |
-| Match | Each fact's identity string is embedded and queried against other documents' facts, 8 queries in parallel; skipped entirely when no other document has facts. | Identity embeddings match "what is being measured", not sentence style. |
-| Adjudicate | Pairs with similarity ≥ 0.82 whose subject or metric strings differ are sent to the model in batches of 20 with a yes/no question. | Cheap way to bridge wording differences without loosening the deterministic rules. |
-| Reconcile and explain | Rules over period, scope, unit, currency, and value tolerance produce the classification, a reason, signals, and key similarities and differences. | Deterministic and inspectable; the model never decides the final label. |
+| Prospectus | 312 chunks | 100 chunks |
+| RBI excerpt | 269 chunks | 100 chunks |
 
-**Reliability.** Each document carries a processing lease with a heartbeat, so two server instances never process the same document. Interrupted documents resume on startup from their last finished page. `POST /api/documents/:id/reprocess` resumes a failed document, or restarts it with `?reset=true`.
+*Why:* roughly 68 percent fewer model calls, and a citation that points at one page rather than a fragment. *Cost:* passage search now returns a whole page, so it is coarser. Evidence precision is unaffected, because each fact still carries its own quoted sentence.
 
----
+**Two providers instead of one.** A rate-limited provider hands the same request to the other. Because a call is one page or one batch, the switch resumes exactly where the first provider stopped.
 
-## Providers and limits
+| Configuration | 100-page extraction | Pages lost |
+|---|---|---|
+| 8 parallel, one provider | ~3.5 min | 0 |
+| 20 parallel, two providers | ~2.5 min | 1 |
+| 12 parallel, two providers, wait budget | ~2.5 to 3 min | 0 |
 
-Every model call, whether extraction, entity detection, adjudication or answering, goes through one provider layer. MiniMax-M3 is preferred and Gemini 2.5 Flash is the fallback, either configurable. When a provider reports a rate limit it is parked for the delay it suggests and the same request continues on the other provider; because a call is one page or one batch, the switch resumes exactly where the first provider stopped. The preferred provider is used again as soon as its cooldown expires, and if both are parked the call waits for the first to free up. `GET /api/providers` shows the current state, and each fact records the model that produced it.
+One 100-page run made 15 provider switches, splitting the work 1,023 facts from MiniMax against 65 from Gemini. *Why:* free tiers throttle unpredictably, and a second provider converts a stall into a switch. *Cost:* pushing to 20 parallel bought 30 percent speed but lost a page when both providers were parked at the same moment. A rate limit is a delay rather than a failure, so a call now keeps cycling providers within a budget, and the pool sits at 12. Losing evidence to buy speed is the wrong trade for this system.
 
-The endpoints that cost a model call are rate limited per workspace: 10 questions and 10 uploads per minute, with `Retry-After` and `X-RateLimit-*` headers on every response. One tester cannot exhaust the shared providers for everyone else.
+**Deterministic classification, model-assisted matching.** The model extracts facts and judges wording; rules decide corroboration and contradiction. *Why:* the assignment asks to see the system's reasoning, and rules are explainable and unit-testable. *Cost:* rules miss relationships a model might notice, and every threshold is a place a reviewer can disagree.
+
+**Evidence is mandatory.** A fact whose quote does not appear on its page is rejected rather than stored with lower confidence.
+
+| Matching strategy | Rejection rate |
+|---|---|
+| Exact string match | 13 percent |
+| Ignoring punctuation, quote style, hyphenation, number spacing | 6 percent |
+
+*Why:* an ungrounded fact is worse than a missing one, because it looks trustworthy. *Cost:* some real facts are still lost to paraphrasing. The rejections are kept and become the evidence for case four.
+
+**Background work in the API process instead of a queue.** The project began with BullMQ and Redis; removing them cut two services and a deployment step. A per-document lease with a heartbeat prevents double processing, and per-page persistence gives crash recovery, which is what the queue was providing. *Cost:* horizontal scaling would need a shared queue again.
+
+**In-process rate limiting.** Model-backed endpoints are capped per workspace at 10 questions and 10 uploads per minute. *Why:* one tester should not exhaust shared provider quota for everyone. *Cost:* counters are per-instance and reset on restart, which is correct for one process and wrong for many.
+
+**Named workspaces instead of accounts.** A person enters a name and their documents live under it, isolated down to separate Pinecone namespaces. *Why:* a reviewer can close the tab and come back to their own documents without a signup flow. *Cost:* there is no password, so it separates testers rather than protecting data. The sign-in screen says so plainly.
+
+**Direct-to-S3 uploads.** The browser requests a presigned URL and sends the file straight to storage. *Why:* it removes the host's request-body limit entirely; Vercel rejects anything over 4.5 MB and one sample PDF is 6.4 MB. *Cost:* one extra round trip and a bucket CORS rule.
+
+### Bugs found by testing end to end
+
+Four defects appeared only under real load. Each is now covered by a regression test.
+
+| Bug | Effect | Fix |
+|---|---|---|
+| Fixed batch of 64 page-sized chunks | ~128k tokens per request exceeded Pinecone's 250k per minute, and a document failed after six retries | Token-aware batching plus a process-wide sliding-window limiter |
+| Resume skipped chunk embedding | A document that failed while embedding resumed straight to extraction and was silently absent from passage search | Embedding completion tracked on the document |
+| Identifiers compared as numbers | Two different corporate identity numbers both reduced to `63090` and were reported as corroborated | Identifier-shaped values are no longer coerced to numbers |
+| Indian magnitudes missing | "8,142 crore" normalized to 8,142 rather than 81.42 billion | `crore` and `lakh` added to the magnitude table |
+
+The last two changed the output materially:
+
+| | Before | After |
+|---|---|---|
+| Corroborated | 45 | 98 |
+| Contradictions | **0** | **6** |
+
+Case two had no example at all before that fix, and the assignment requires one.
+
+### AI tools used
+
+Claude Code, running Claude Opus 5 and Claude Fable 5.1, was used as a pair programmer throughout: design discussion, implementation, debugging against live services, and this documentation. At runtime the system calls MiniMax-M3 for extraction, adjudication and answers, with Gemini 2.5 Flash as the fallback, and Pinecone-hosted `llama-text-embed-v2` for embeddings.
 
 ---
 
@@ -81,23 +206,20 @@ The endpoints that cost a model call are rate limited per workspace: 10 question
 
 ![API design](docs/api-design.svg)
 
-All `/api` requests carry the workspace name in the `x-factlayer-user` header.
+Full request and response shapes are in [API.md](API.md). Every `/api` request carries the workspace name in the `x-factlayer-user` header.
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /api/documents/upload` | Upload 1 to 20 PDFs in the `document` field; each starts processing at once |
-| `GET /api/documents` · `GET /api/documents/:id` | List documents, or one document with its `progress` object |
+| `POST /api/documents/upload-url` · `POST /api/documents/:id/uploaded` | Direct-to-S3 upload, no request-body limit |
+| `POST /api/documents/upload` | Upload 1 to 20 PDFs through the API |
+| `GET /api/documents` · `GET /api/documents/:id` | Documents with a live `progress` object |
 | `POST /api/documents/:id/reprocess` | Resume unfinished pages, or `?reset=true` to start over |
-| `GET /api/facts/document/:id` · `GET /api/facts/:id` | Facts with evidence links |
-| `GET /api/facts/search?q=` · `GET /api/search/chunks?q=` | Semantic search over facts or passages |
+| `GET /api/facts/document/:id` · `GET /api/facts/:id` · `GET /api/facts/search?q=` | Facts with evidence links, and semantic search |
 | `GET /api/relationships/document/:id` · `GET /api/relationships/:id` | Classified relationships with reasoning |
 | `POST /api/ask` | Cited answer across all documents (rate limited) |
-| `GET /api/providers` | Provider availability and cooldowns |
 | `GET /api/showcase` | The four cases with evidence |
-| `GET /api/documents/:id/pages` · `/chunks` · `GET /api/pages/:id` · `GET /api/chunks/:id` | Evidence text |
+| `GET /api/providers` | Model provider availability and cooldowns |
 | `GET /health` | Liveness |
-
-Every response uses `{ statusCode, message, data, success }`. Full request and response shapes, including the `progress` object and the answer citation format, are in [API.md](API.md).
 
 ---
 
@@ -105,133 +227,71 @@ Every response uses `{ statusCode, message, data, success }`. Full request and r
 
 | Collection | Holds | Evidence fields |
 |---|---|---|
-| `documents` | Workspace owner, file metadata, status, stage, progress counters, primary entity, processing lease | `s3Key` |
+| `documents` | Workspace, file metadata, status, stage, progress, primary entity, processing lease | `s3Key` |
 | `pages` | Page number and text | `documentId` |
-| `chunks` | Page-sized text, extraction status, fact count, vector id | `documentId`, `pageId`, `pageNumber` |
-| `facts` | Raw and normalized subject, predicate, value, unit, currency, period, scope; confidence; identity string for matching | `documentId`, `pageId`, `chunkId`, `pageNumber`, `sourceText` |
-| `relationships` | Pair of facts, classification, similarity and matching scores, comparison signals, reason, summary, key similarities and differences | Evidence entry for each fact |
-| `extractionissues` | Type, message, the rejected candidate or malformed output preview, and the handling applied | `documentId`, `chunkId`, `pageNumber` |
+| `chunks` | Page-sized text, extraction status, vector id | `documentId`, `pageId`, `pageNumber` |
+| `facts` | Raw and normalized subject, predicate, value, unit, currency, period, scope, confidence | `documentId`, `pageId`, `chunkId`, `pageNumber`, `sourceText` |
+| `relationships` | Fact pair, classification, scores, signals, reasoning | Evidence entry per fact |
+| `extractionissues` | Failure type, rejected candidate, and the handling applied | `documentId`, `chunkId`, `pageNumber` |
 
-MongoDB is the source of truth; Pinecone holds chunk vectors (namespace `chunks__<workspace>`) and fact-identity vectors (namespace `facts__<workspace>`) and is only used to find candidates that are then hydrated from MongoDB.
-
----
-
-## Engineering decisions and trade-offs
-
-- **In-process background work instead of a queue.** The project started with BullMQ and Redis. Removing them simplified running and debugging, and the per-document lease plus resumable stages preserved the two things the queue was providing: no double processing and recovery after a crash. A shared queue would return if the API needed to scale across machines.
-- **Deterministic classification, model-assisted matching.** The model extracts and adjudicates wording; rules decide corroboration and contradiction. That keeps every label explainable and testable.
-- **Evidence is mandatory.** A fact without a verbatim quote on its page is rejected rather than stored with lower confidence. This costs some recall (about 6 percent of candidates on the sample documents) and buys trust in everything that remains.
-- **Page-level chunks.** Fewer model calls and exact page citations, at the cost of coarser passage search results.
-- **Provider isolation.** Extraction, adjudication, and answering each go through one function in `services/extraction.service.js`; embeddings through one function per provider in `services/embedding.service.js`. Swapping MiniMax for Claude or Gemini, or Pinecone inference for another embedder, is a contained change.
-- **Rate limits are a first-class concern.** Retries honour provider-suggested delays, per-minute windows, and burst limits; concurrency is configurable per stage; and a rate-limited provider hands work to the other rather than stalling. Two providers plus a wider pool cut extraction of a 100-page document from about 3.5 minutes to about 2.5. Pushing the pool to 20 was measurably worse: both free tiers were parked at once often enough that a page ran out of failover attempts, so a call now waits within a budget instead of giving up, and the pool sits at 12.
-
----
-
-## Running locally
-
-**Requirements:** Node.js 20+, MongoDB, an S3 bucket, a Pinecone API key (the index is created automatically), and a MiniMax API key.
-
-```bash
-cp .env.example .env   # fill in MONGO_URI, AWS_*, PINECONE_API_KEY, MINIMAX_API_KEY
-npm install
-npm start              # API + processing on http://localhost:3000
-```
-
-`npm run dev` runs the same with file watching. `npm test` runs the unit tests.
-
-Frontend, in the sibling folder:
-
-```bash
-cd ../factlayer_frontend
-npm install
-npm run dev            # http://localhost:8080, API base configurable in the top-right setting
-```
-
-Enter a name to open a workspace, upload the three starter PDFs from `data/starter-datasets/delhivery/` in one go, watch the progress bars, and open **Cases** and **Ask**. Come back later with the same name and everything is still there.
-
-**Environment variables** (see `.env.example`):
-
-| Variable | Meaning |
-|---|---|
-| `MONGO_URI` | MongoDB connection string |
-| `AWS_REGION`, `AWS_BUCKET_NAME`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Original PDF storage |
-| `PINECONE_API_KEY`, `PINECONE_INDEX_NAME`, `PINECONE_NAMESPACE`, `PINECONE_CLOUD`, `PINECONE_REGION` | Vector index; created with `EMBEDDING_DIMENSION` if missing |
-| `EMBEDDING_PROVIDER` (`pinecone` or `minimax`), `PINECONE_EMBEDDING_MODEL`, `MINIMAX_EMBEDDING_MODEL`, `EMBEDDING_DIMENSION` | Embedding model and dimension; must match the index |
-| `MINIMAX_API_KEY`, `MINIMAX_API_BASE`, `FACT_EXTRACTION_MODEL` | Primary LLM for extraction, adjudication, and answers |
-| `GEMINI_API_KEY`, `GEMINI_MODEL`, `LLM_PROVIDER` | Fallback LLM used automatically while the primary is rate limited |
-| `ASK_RATE_MAX`, `ASK_RATE_WINDOW_MS`, `UPLOAD_RATE_MAX`, `UPLOAD_RATE_WINDOW_MS` | Per-workspace limits on the model-backed endpoints |
-| `PROCESSING_CONCURRENCY`, `EXTRACTION_CONCURRENCY`, `MATCHING_CONCURRENCY`, `EXTRACTION_REQUESTS_PER_MINUTE` | Parallelism per stage and optional pacing |
-
-Keep `.env` out of git; it is ignored.
-
----
-
-## Deploying
-
-**Frontend on Vercel.** `vercel.json` in `../factlayer_frontend` builds with Nitro's Vercel preset and emits `.vercel/output`, which Vercel serves directly. Import the repository, set the project root to the frontend folder, and set one environment variable:
-
-| Variable | Value |
-|---|---|
-| `VITE_API_BASE` | the public URL of your API, for example `https://factlayer.onrender.com` |
-
-Anyone using the app can still point at a different API through the "Service" control in the header; the variable only sets the default.
-
-**Backend needs a host that keeps a process alive.** Render, Railway, Fly.io, or a small VM all work: provide the environment variables listed above and expose `PORT`. A Docker or Node buildpack deployment needs no extra configuration.
-
-Serverless platforms such as Vercel Functions or AWS Lambda are **not** suitable, for reasons that are structural rather than fixable with configuration:
-
-| What the API does | What serverless does |
-|---|---|
-| Keeps processing a document for minutes after the upload response is sent | Freezes or kills the instance once the response is returned, so uploads would report success and never finish |
-| Runs a single extraction for 3+ minutes on a 100-page PDF | Caps a function at 60 seconds (300 on paid plans) |
-| Holds per-document leases, provider cooldowns, rate-limit counters and the embedding token budget in process memory | Starts a fresh instance per request, so every one of those resets and two instances can process the same document |
-| Resumes unfinished documents on startup | Cold-starts constantly, which would re-trigger resume repeatedly |
-
-Read-only endpoints would work there; ingestion would not. Moving to serverless would mean a real queue and a separate worker, which is what this project deliberately removed.
-
-Two portability fixes make the API run on any container host, including ones without native build tooling: `utils/pdfPolyfills.js` supplies the browser globals pdfjs touches at load time when the optional `@napi-rs/canvas` binary is absent, and uploads fall back to the system temp directory when the project folder is read-only (`UPLOAD_DIR` overrides both defaults).
-
-CORS is already configured for this split: `localhost`, any `*.vercel.app` deployment including per-commit preview URLs, and ngrok tunnels are accepted, and `ALLOWED_ORIGINS` adds your own domains (`*` disables the check). Look-alike hosts such as `vercel.app.evil.com` are refused.
+MongoDB is the source of truth. Pinecone holds chunk vectors and fact-identity vectors in per-workspace namespaces and is used only to find candidates, which are then hydrated from MongoDB.
 
 ---
 
 ## Testing
 
-`npm test` runs 31 tests with Node's built-in runner and no external services:
+`npm test` runs 53 tests with Node's built-in runner and no external services:
 
+- chunking determinism and page metadata
+- evidence grounding, including quote-style, hyphenation and number-spacing tolerance, and rejection of altered evidence
+- unit, currency, percentage and period normalization, including idempotence and identifier rejection
+- candidate comparison, self and same-document rejection, value-type compatibility
+- adjudicator overrides and descriptive-fact contradictions
+- reconciliation outcomes for equal, contradictory and context-differing facts
 - provider failover: switching on a rate limit, skipping a parked provider, recovering when both are limited, and not masking real errors
 - rate limiter burst, refusal and per-workspace budgets
 - workspace name rules and per-workspace vector namespaces
-- identifier values (a company identity number) never compared as numbers
-- chunking determinism and page metadata
-- evidence grounding, including quote-style, hyphenation, and number-spacing tolerance, and rejection of altered evidence
-- unit, currency, percentage, and period normalization, including idempotence
-- candidate comparison, self and same-document rejection, value-type compatibility
-- adjudicator overrides and descriptive-fact contradictions
-- reconciliation outcomes for equal, contradictory, and context-differing facts
+- CORS origin rules, including look-alike domains
+- PDF runtime portability without the native canvas package
 
-End-to-end behaviour was verified by uploading the three starter PDFs against live MongoDB, S3, Pinecone, and MiniMax: 2,812 facts and 790 relationships across the set, with all four cases present.
+End-to-end behaviour was verified by uploading the three starter PDFs against live MongoDB, S3, Pinecone, MiniMax and Gemini.
 
 ---
 
-## Limitations and next steps
+## Limitations and Next Steps
 
-- **Facts without a stated period** are classified `uncertain` when values differ, because a change over time cannot be told from a contradiction. Inferring periods from nearby headings and document dates is the next improvement.
-- **Adjudication is batched but still model-bound.** A per-document alias table for subsidiaries and segments would cut those calls.
-- **Passage search returns whole pages** since chunks are page-sized; a secondary paragraph index would sharpen it.
-- **Workspaces are names, not accounts.** No password, so they separate testers rather than protect data. Real use would need authentication, and CORS is open.
-- **Rate limits still dominate speed.** Failover between two free tiers helps, but at 20 pages in parallel both providers are sometimes parked at once and calls wait. A paid key on either provider would remove that ceiling.
-- **Single-process scaling.** Multiple API instances would need a shared queue again; the lease already prevents double processing.
+**What does not work yet**
+
+- **Facts without a stated period** are classified `uncertain` when values differ, because a change over time cannot be distinguished from a contradiction. This is the largest single source of missed contradictions.
+- **Passage search returns whole pages**, a direct consequence of page-level chunking.
+- **Rate limits set the pace.** Two free tiers together still park simultaneously under load, so extraction speed is a function of the plan rather than the pipeline.
+- **Adjudication is capped** at 400 pairs per document to bound cost, so some corroborations in large documents are never examined.
+- **Workspaces are names, not accounts.** No password, and CORS is open to any Vercel origin.
+- **Single process.** Multiple API instances would need a shared queue; the lease prevents double processing but does not distribute work.
+- **Serverless does not fit.** The API keeps processing for minutes after responding, holds leases and cooldowns in memory, and resumes on startup. On Vercel or Lambda an upload reports success and never finishes. Read endpoints work; ingestion does not.
+
+**What I would build next, in order**
+
+1. **Infer periods from context.** Read the surrounding heading and the document's own reporting date so a value without an explicit period can still be compared. This turns the 112 `uncertain` relationships into real classifications and is the highest-value change on the list.
+2. **A fuzzy evidence span search.** Edit-distance matching would recover the paraphrased quotes the 6 percent rejection rate still discards, without weakening the guarantee that evidence exists on the page.
+3. **A secondary paragraph index** so passage search is precise while facts keep page-level citations.
+4. **Structured outputs** where the provider supports them, removing the malformed-JSON repair path entirely.
+5. **A per-document alias table** for subsidiaries and segments, cutting adjudication calls and cost.
+6. **A shared queue** if the API ever needs more than one instance.
 
 ---
 
-## AI tools used
+## Additional Notes
 
-The code was written with Claude Code (Claude Fable 5.1) as a pair programmer for design, implementation, debugging against live services, and documentation. MiniMax-M3 performs fact extraction, adjudication, and answer writing at runtime. Pinecone-hosted `llama-text-embed-v2` produces embeddings.
+**On being wrong loudly.** The system is built to fail visibly rather than quietly. A fact whose quote is not on the page is dropped, not down-weighted. A page that cannot be extracted is recorded and skipped, and the document still completes with a note. Values that differ without a comparable period are marked uncertain rather than called contradictions. The 208 recorded extraction issues are not something to hide; they are case four.
 
----
+**On the contradiction that may be a definition difference.** The Adjusted EBITDA example, ₹(217) crore against ₹(4,038.66) million for FY23, could be two different definitions of the metric rather than an error in either document. The system flags it with both quotes and both page numbers and lets a person judge. That is deliberate: surface the conflict with evidence, do not adjudicate the underlying accounting.
 
-## Project structure
+**On the sample data.** `data/starter-datasets/delhivery/` produces all four cases. `data/starter-datasets/india-macroeconomy/` is harder: the Economic Survey, the RBI annual report and an IMF Article IV describe the same economy using different fiscal-year conventions, which stresses period normalization considerably more.
+
+**On running costs.** Both model providers are on free or entry tiers, so processing is rate limited rather than compute limited. A paid key on either provider removes the ceiling and nothing in the code changes.
+
+**Repository layout**
 
 ```
 index.js                      Express app; resumes interrupted documents on start
@@ -240,16 +300,19 @@ services/
   document.service.js         resumable pipeline, lease and heartbeat, progress
   pdf.service.js              page extraction
   chunk.service.js            page-level chunking
-  extraction.service.js       MiniMax calls, grounding, validation, adjudication
-  normalization.service.js    canonical subjects, predicates, values, periods, scopes
-  embedding.service.js        Pinecone index, hosted embeddings, vector queries
+  llm.service.js              provider layer with rate-limit failover
+  extraction.service.js       prompts, grounding, validation, adjudication
+  normalization.service.js    canonical subjects, values, periods, scopes
+  embedding.service.js        Pinecone index, hosted embeddings, token budget
   comparison.service.js       candidate matching and adjudication pass
   reconciliation.service.js   classification rules
   explanation.service.js      human-readable reasoning
   answer.service.js           cited answers
   showcase.service.js         the four cases
-models/                       Mongoose schemas incl. ExtractionIssue
-utils/                        retry with provider-aware backoff, concurrency pool, normalizers
+middlewares/                  workspace, rate limits, uploads, errors
+models/                       Mongoose schemas including ExtractionIssue
+utils/                        retry with provider-aware backoff, concurrency, normalizers, PDF polyfills
+scripts/configure-s3-cors.mjs one-time bucket setup for direct uploads
 tests/                        node --test suites
 docs/                         system-design.svg, api-design.svg
 data/starter-datasets/        sample PDFs
