@@ -281,16 +281,6 @@ End-to-end behaviour was verified by uploading the three starter PDFs against li
 
 ---
 
-## Additional Notes
-
-**On being wrong loudly.** The system is built to fail visibly rather than quietly. A fact whose quote is not on the page is dropped, not down-weighted. A page that cannot be extracted is recorded and skipped, and the document still completes with a note. Values that differ without a comparable period are marked uncertain rather than called contradictions. The 208 recorded extraction issues are not something to hide; they are case four.
-
-**On the contradiction that may be a definition difference.** The Adjusted EBITDA example, ₹(217) crore against ₹(4,038.66) million for FY23, could be two different definitions of the metric rather than an error in either document. The system flags it with both quotes and both page numbers and lets a person judge. That is deliberate: surface the conflict with evidence, do not adjudicate the underlying accounting.
-
-**On the sample data.** `data/starter-datasets/delhivery/` produces all four cases. `data/starter-datasets/india-macroeconomy/` is harder: the Economic Survey, the RBI annual report and an IMF Article IV describe the same economy using different fiscal-year conventions, which stresses period normalization considerably more.
-
-**On running costs.** Both model providers are on free or entry tiers, so processing is rate limited rather than compute limited. A paid key on either provider removes the ceiling and nothing in the code changes.
-
 **Repository layout**
 
 ```
