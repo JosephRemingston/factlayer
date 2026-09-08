@@ -9,7 +9,7 @@ Built for the Superjoin engineering intern assignment.
 | **Live app** | https://factlyerfrontend.vercel.app/ |
 | **Video demo** | [3-minute walkthrough](https://drive.google.com/file/d/1jyWeNXmoHA19NYgqz-H0asjIIY6ZJUTa/view?usp=sharing) |
 | **Frontend repository** | [JosephRemingston/rausch-round](https://github.com/JosephRemingston/rausch-round) |
-| **Stack** | Node.js 20 · Express 5 · MongoDB · Pinecone · AWS S3 · MiniMax-M3 with Gemini fallback · React (TanStack Start) |
+| **Stack** | Node.js 20 · Express 5 · MongoDB · Pinecone · AWS S3 · MiniMax-M3 with Gemini fallback · React |
 | **Tests** | `npm test` — 53 unit tests, no external services required |
 | **Documents** | [API reference](API.md) · [System design](docs/system-design.svg) · [API design](docs/api-design.svg) |
 
