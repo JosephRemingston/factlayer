@@ -81,7 +81,7 @@ For document upload:
 Content-Type: multipart/form-data
 ```
 
-Do not manually set the multipart boundary when using browser `FormData`; let the client runtime set it.
+Do not manually set the multipart boundary when using browser `FormData`; let the client runtime set it. Uploads are staged on disk in `UPLOAD_DIR`, falling back to the project `uploads/` folder and then the system temp directory.
 
 ## Standard Response Format
 

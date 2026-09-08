@@ -7,7 +7,7 @@ Built for the Superjoin engineering intern assignment. Backend in this repo; the
 | | |
 |---|---|
 | **Stack** | Node.js 20 · Express 5 · MongoDB (Mongoose) · Pinecone (vectors + hosted embeddings) · AWS S3 · MiniMax-M3 · React (TanStack Start) |
-| **Tests** | `npm test` — 49 unit tests covering chunking, grounding, normalization, comparison, adjudication, reconciliation, workspaces, provider failover, rate limits, CORS |
+| **Tests** | `npm test` — 53 unit tests covering chunking, grounding, normalization, comparison, adjudication, reconciliation, workspaces, provider failover, rate limits, CORS, PDF runtime portability |
 | **Video demo** | _Add link here_ |
 | **Live docs** | [API reference](API.md) · [System design](docs/system-design.svg) · [API design](docs/api-design.svg) |
 
@@ -176,7 +176,20 @@ Keep `.env` out of git; it is ignored.
 
 Anyone using the app can still point at a different API through the "Service" control in the header; the variable only sets the default.
 
-**Backend somewhere that keeps a process alive.** The API is not a good fit for serverless: it processes documents in the same process for minutes after the upload response returns, holds a per-document lease with a heartbeat, and resumes interrupted work on startup. Any host that runs a long-lived Node process works, such as Render, Railway, Fly.io, or a small VM. Provide the environment variables listed above, and expose the port from `PORT`.
+**Backend needs a host that keeps a process alive.** Render, Railway, Fly.io, or a small VM all work: provide the environment variables listed above and expose `PORT`. A Docker or Node buildpack deployment needs no extra configuration.
+
+Serverless platforms such as Vercel Functions or AWS Lambda are **not** suitable, for reasons that are structural rather than fixable with configuration:
+
+| What the API does | What serverless does |
+|---|---|
+| Keeps processing a document for minutes after the upload response is sent | Freezes or kills the instance once the response is returned, so uploads would report success and never finish |
+| Runs a single extraction for 3+ minutes on a 100-page PDF | Caps a function at 60 seconds (300 on paid plans) |
+| Holds per-document leases, provider cooldowns, rate-limit counters and the embedding token budget in process memory | Starts a fresh instance per request, so every one of those resets and two instances can process the same document |
+| Resumes unfinished documents on startup | Cold-starts constantly, which would re-trigger resume repeatedly |
+
+Read-only endpoints would work there; ingestion would not. Moving to serverless would mean a real queue and a separate worker, which is what this project deliberately removed.
+
+Two portability fixes make the API run on any container host, including ones without native build tooling: `utils/pdfPolyfills.js` supplies the browser globals pdfjs touches at load time when the optional `@napi-rs/canvas` binary is absent, and uploads fall back to the system temp directory when the project folder is read-only (`UPLOAD_DIR` overrides both defaults).
 
 CORS is already configured for this split: `localhost`, any `*.vercel.app` deployment including per-commit preview URLs, and ngrok tunnels are accepted, and `ALLOWED_ORIGINS` adds your own domains (`*` disables the check). Look-alike hosts such as `vercel.app.evil.com` are refused.
 

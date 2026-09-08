@@ -1,3 +1,6 @@
+// Imported first: it defines the browser globals pdfjs touches while loading, which serverless
+// runtimes do not provide. Import order matters, so this must stay above pdf-parse.
+import "../utils/pdfPolyfills.js";
 import { PDFParse } from "pdf-parse";
 
 const extractPdfPages = async (pdfBuffer) => {
