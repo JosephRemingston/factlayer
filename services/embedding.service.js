@@ -1,5 +1,5 @@
 import { Pinecone } from "@pinecone-database/pinecone";
-import { EMBEDDING_BATCH_SIZE, PINECONE_DELETE_BATCH_SIZE } from "../utils/constants.js";
+import { DEFAULT_OWNER, EMBEDDING_BATCH_SIZE, EMBEDDING_BATCH_TOKEN_BUDGET, EMBEDDING_TOKENS_PER_MINUTE, PINECONE_DELETE_BATCH_SIZE } from "../utils/constants.js";
 import { withRetry } from "../utils/retry.js";
 
 const DEFAULT_MINIMAX_API_BASE = "https://api.minimax.io/v1";
@@ -67,8 +67,12 @@ const ensureIndex = async () => {
   return pineconeIndex;
 };
 
-const getChunkNamespace = async () => (await ensureIndex()).namespace(process.env.PINECONE_NAMESPACE || "factlayer");
-const getFactNamespace = async () => (await ensureIndex()).namespace("facts");
+// One namespace pair per workspace keeps each tester's vectors isolated, so retrieval, matching and
+// answers never reach across workspaces.
+const chunkNamespaceName = (owner) => `chunks__${owner || DEFAULT_OWNER}`;
+const factNamespaceName = (owner) => `facts__${owner || DEFAULT_OWNER}`;
+const getChunkNamespace = async (owner) => (await ensureIndex()).namespace(chunkNamespaceName(owner));
+const getFactNamespace = async (owner) => (await ensureIndex()).namespace(factNamespaceName(owner));
 
 const assertVector = (vector) => {
   const dimension = getEmbeddingDimension();
@@ -135,23 +139,68 @@ const embedTexts = async (texts, type) => {
 
 const createEmbeddings = async (texts) => {
   if (!texts.length) return [];
-  const vectors = await withRetry(() => embedTexts(texts, "db"), { label: "Document embedding" });
+  await reserveTokens(texts.reduce((sum, text) => sum + estimateTokens(text), 0));
+  const vectors = await withRetry(() => embedTexts(texts, "db"), { label: "Document embedding", retries: 8 });
   if (vectors.length !== texts.length) throw new Error(`Embedding provider returned ${vectors.length} vectors for ${texts.length} inputs`);
   return vectors.map(assertVector);
 };
 
 const createQueryEmbedding = async (text) => {
-  const [vector] = await withRetry(() => embedTexts([text], "query"), { label: "Query embedding" });
+  await reserveTokens(estimateTokens(text));
+  const [vector] = await withRetry(() => embedTexts([text], "query"), { label: "Query embedding", retries: 8 });
   return assertVector(vector);
+};
+
+// Rough token estimate; providers bill embeddings per token and cap them per minute.
+const estimateTokens = (text) => Math.ceil(String(text || "").length / 4) + 8;
+
+// Splits texts so no single request exceeds the per-request token budget or the batch count.
+const batchByTokens = (items, textOf) => {
+  const maxTokens = Number(process.env.EMBEDDING_BATCH_TOKEN_BUDGET || EMBEDDING_BATCH_TOKEN_BUDGET);
+  const maxCount = Number(process.env.EMBEDDING_BATCH_SIZE || EMBEDDING_BATCH_SIZE);
+  const batches = [];
+  let current = [];
+  let tokens = 0;
+  for (const item of items) {
+    const cost = estimateTokens(textOf(item));
+    if (current.length && (current.length >= maxCount || tokens + cost > maxTokens)) {
+      batches.push(current);
+      current = [];
+      tokens = 0;
+    }
+    current.push(item);
+    tokens += cost;
+  }
+  if (current.length) batches.push(current);
+  return batches;
+};
+
+// Process-wide sliding-window limiter: waits until the last 60 seconds of embedding spend leaves
+// room for this request, so concurrent documents cannot exceed the provider's tokens-per-minute cap.
+const spendWindow = [];
+const reserveTokens = async (tokens) => {
+  const limit = Number(process.env.EMBEDDING_TOKENS_PER_MINUTE || EMBEDDING_TOKENS_PER_MINUTE);
+  if (!limit) return;
+  for (;;) {
+    const cutoff = Date.now() - 60000;
+    while (spendWindow.length && spendWindow[0].at <= cutoff) spendWindow.shift();
+    const used = spendWindow.reduce((sum, entry) => sum + entry.tokens, 0);
+    if (used + tokens <= limit || !spendWindow.length) {
+      spendWindow.push({ at: Date.now(), tokens });
+      return;
+    }
+    const waitMs = Math.max(250, spendWindow[0].at + 60000 - Date.now());
+    console.log(`Embedding rate limiter: waiting ${Math.ceil(waitMs / 1000)}s (${used} tokens used in the last minute)`);
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+  }
 };
 
 const getFactVectorId = (factId) => `fact_${factId.toString()}`;
 
-const upsertChunkEmbeddings = async (chunks) => {
+const upsertChunkEmbeddings = async (chunks, owner) => {
   if (!chunks.length) return;
-  const namespace = await getChunkNamespace();
-  for (let index = 0; index < chunks.length; index += EMBEDDING_BATCH_SIZE) {
-    const batch = chunks.slice(index, index + EMBEDDING_BATCH_SIZE);
+  const namespace = await getChunkNamespace(owner);
+  for (const batch of batchByTokens(chunks, (chunk) => chunk.text)) {
     const vectors = await createEmbeddings(batch.map((chunk) => chunk.text));
     await namespace.upsert({
       records: batch.map((chunk, batchIndex) => ({
@@ -182,20 +231,21 @@ const deleteVectorsByIds = async (namespace, ids) => {
   }
 };
 
-const deleteChunkVectors = async (vectorIds) => {
+const deleteChunkVectors = async (vectorIds, owner) => {
   if (!vectorIds.length || !process.env.PINECONE_API_KEY) return;
-  await deleteVectorsByIds(await getChunkNamespace(), vectorIds);
+  await deleteVectorsByIds(await getChunkNamespace(owner), vectorIds);
 };
 
-const upsertFactEmbeddings = async (facts, onProgress = null) => {
+const upsertFactEmbeddings = async (facts, onProgress = null, owner = undefined) => {
   const vectorsByFactId = new Map();
   if (!facts.length) return vectorsByFactId;
-  const namespace = await getFactNamespace();
-  for (let index = 0; index < facts.length; index += EMBEDDING_BATCH_SIZE) {
-    const batch = facts.slice(index, index + EMBEDDING_BATCH_SIZE);
+  const namespace = await getFactNamespace(owner ?? facts[0]?.owner);
+  let embedded = 0;
+  for (const batch of batchByTokens(facts, (fact) => fact.matchText || fact.sourceText)) {
     const vectors = await createEmbeddings(batch.map((fact) => fact.matchText || fact.sourceText));
     batch.forEach((fact, batchIndex) => vectorsByFactId.set(fact._id.toString(), vectors[batchIndex]));
-    if (onProgress) await onProgress(Math.min(index + batch.length, facts.length), facts.length);
+    embedded += batch.length;
+    if (onProgress) await onProgress(embedded, facts.length);
     await namespace.upsert({
       records: batch.map((fact, batchIndex) => ({
         id: getFactVectorId(fact._id),
@@ -223,22 +273,26 @@ const upsertFactEmbeddings = async (facts, onProgress = null) => {
   return vectorsByFactId;
 };
 
-const deleteFactVectors = async (factIds) => {
+const deleteFactVectors = async (factIds, owner) => {
   if (!factIds.length || !process.env.PINECONE_API_KEY) return;
-  await deleteVectorsByIds(await getFactNamespace(), factIds.map(getFactVectorId));
+  await deleteVectorsByIds(await getFactNamespace(owner), factIds.map(getFactVectorId));
 };
 
-const queryFactVectorsByVector = async (vector, topK = 20) => (await getFactNamespace()).query({ vector, topK, includeMetadata: true });
+const queryFactVectorsByVector = async (vector, topK = 20, owner) => (await getFactNamespace(owner)).query({ vector, topK, includeMetadata: true });
 
-const queryFactVectors = async (text, topK = 20) => queryFactVectorsByVector(await createQueryEmbedding(text), topK);
+const queryFactVectors = async (text, topK = 20, owner) => queryFactVectorsByVector(await createQueryEmbedding(text), topK, owner);
 
-const queryChunkVectors = async (text, topK = 20) => {
+const queryChunkVectors = async (text, topK = 20, owner) => {
   const vector = await createQueryEmbedding(text);
-  return (await getChunkNamespace()).query({ vector, topK, includeMetadata: true });
+  return (await getChunkNamespace(owner)).query({ vector, topK, includeMetadata: true });
 };
 
 export {
   ensureIndex,
+  chunkNamespaceName,
+  factNamespaceName,
+  batchByTokens,
+  estimateTokens,
   upsertChunkEmbeddings,
   deleteChunkVectors,
   upsertFactEmbeddings,

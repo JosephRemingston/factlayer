@@ -20,14 +20,14 @@ const isRetryable = (error) => RETRYABLE_STATUSES.has(getStatus(error))
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const withRetry = async (operation, { retries = 6, baseDelayMs = 2000, maxDelayMs = 60000, label = "operation" } = {}) => {
+const withRetry = async (operation, { retries = 6, baseDelayMs = 2000, maxDelayMs = 60000, label = "operation", shouldRetry = null } = {}) => {
   let attempt = 0;
   for (;;) {
     try {
       return await operation();
     } catch (error) {
       attempt += 1;
-      if (attempt > retries || !isRetryable(error)) throw error;
+      if (attempt > retries || !isRetryable(error) || (shouldRetry && !shouldRetry(error))) throw error;
       const delay = Math.min(getSuggestedDelayMs(error) ?? baseDelayMs * 2 ** (attempt - 1), maxDelayMs);
       console.warn(`${label} failed (attempt ${attempt}/${retries}); retrying in ${Math.round(delay / 1000)}s: ${String(error.message).split("\n")[0].slice(0, 160)}`);
       await sleep(delay);

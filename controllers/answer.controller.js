@@ -1,6 +1,7 @@
 import ApiError from "../utils/ApiError.js";
 import ApiResponse from "../utils/ApiResponse.js";
 import { answerQuestion } from "../services/answer.service.js";
+import { providerStatus } from "../services/llm.service.js";
 
 const parseTopK = (value) => {
   const topK = Number(value || 10);
@@ -11,8 +12,10 @@ const parseTopK = (value) => {
 const ask = async (req, res) => {
   const question = String(req.body?.question ?? req.query.q ?? "").trim();
   if (!question) throw ApiError.badRequest("A question is required (body.question or ?q=)");
-  const result = await answerQuestion(question, { topK: parseTopK(req.body?.topK ?? req.query.topK) });
+  const result = await answerQuestion(question, { topK: parseTopK(req.body?.topK ?? req.query.topK), owner: req.owner });
   return ApiResponse.success(res, "Answer generated successfully", result);
 };
 
-export { ask };
+const providers = async (req, res) => ApiResponse.success(res, "Provider status retrieved successfully", { providers: providerStatus() });
+
+export { ask, providers };

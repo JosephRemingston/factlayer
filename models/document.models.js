@@ -2,6 +2,8 @@ import mongoose from "mongoose";
 
 const documentSchema = new mongoose.Schema(
   {
+    // Workspace this record belongs to; every read is scoped by it.
+    owner: { type: String, required: true, default: "demo", index: true },
     originalFileName: { type: String, required: true, trim: true },
     s3Key: { type: String, required: true, unique: true },
     mimeType: { type: String, required: true, enum: ["application/pdf"] },
@@ -18,6 +20,8 @@ const documentSchema = new mongoose.Schema(
     factCount: { type: Number, default: 0 },
     relationshipCount: { type: Number, default: 0 },
     extractionIssueCount: { type: Number, default: 0 },
+    // False until chunk vectors are in the index, so a resume after a failed embedding stage redoes it.
+    chunksEmbedded: { type: Boolean, default: false },
     primaryEntity: { type: String, default: null },
     processingStage: { type: String, default: null },
     processingStartedAt: { type: Date, default: null },

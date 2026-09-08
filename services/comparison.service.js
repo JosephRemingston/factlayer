@@ -33,12 +33,8 @@ const compareFacts = (fact, candidate, adjudication = null) => {
     samePredicate: samePredicate || Boolean(adjudication?.same),
     samePeriod: fact.periodLabel && candidate.periodLabel ? fact.periodLabel === candidate.periodLabel : null,
     sameScope: fact.normalizedScope && candidate.normalizedScope ? fact.normalizedScope === candidate.normalizedScope : null,
-    sameUnit: fact.normalizedUnit || candidate.normalizedUnit
-      ? fact.normalizedUnit === candidate.normalizedUnit
-      : true,
-    sameCurrency: fact.normalizedCurrency || candidate.normalizedCurrency
-      ? fact.normalizedCurrency === candidate.normalizedCurrency
-      : true,
+    sameUnit: fact.normalizedUnit && candidate.normalizedUnit ? fact.normalizedUnit === candidate.normalizedUnit : null,
+    sameCurrency: fact.normalizedCurrency && candidate.normalizedCurrency ? fact.normalizedCurrency === candidate.normalizedCurrency : null,
     ...(adjudication?.same ? { adjudicated: { same: true, reason: adjudication.reason || null } } : {}),
   };
 
@@ -116,11 +112,12 @@ const buildCandidateRelationship = (fact, candidate, similarityScore, adjudicati
 };
 
 // Returns the semantic matches for one fact as { candidate, similarity } pairs (other documents only).
-const findCandidateMatches = async (fact, search = queryFactVectors, vector = null) => {
+const findCandidateMatches = async (fact, search = queryFactVectors, vector = null, owner = undefined) => {
   // Reuse the vector produced during upsert when available so each fact is embedded only once.
+  const scope = owner ?? fact.owner;
   const result = vector
-    ? await queryFactVectorsByVector(vector, FACT_MATCH_TOP_K)
-    : await search(fact.matchText || fact.sourceText, FACT_MATCH_TOP_K);
+    ? await queryFactVectorsByVector(vector, FACT_MATCH_TOP_K, scope)
+    : await search(fact.matchText || fact.sourceText, FACT_MATCH_TOP_K, scope);
   const matches = result?.matches || [];
   const candidateIds = matches.map((match) => match.metadata?.factId).filter(Boolean);
   const candidates = await Fact.find({ _id: { $in: candidateIds } }).lean();
@@ -130,20 +127,21 @@ const findCandidateMatches = async (fact, search = queryFactVectors, vector = nu
     .filter(({ candidate }) => candidate && asString(candidate.documentId) !== asString(fact.documentId) && asString(candidate._id) !== asString(fact._id));
 };
 
-const findCandidateRelationships = async (fact, search = queryFactVectors, vector = null) => {
-  const matches = await findCandidateMatches(fact, search, vector);
+const findCandidateRelationships = async (fact, search = queryFactVectors, vector = null, owner = undefined) => {
+  const matches = await findCandidateMatches(fact, search, vector, owner);
   return matches.map(({ candidate, similarity }) => buildCandidateRelationship(fact, candidate, similarity)).filter(Boolean);
 };
 
 // Two passes: deterministic string matching first, then an LLM adjudication for strongly similar pairs
 // whose subject or metric wording differs ("the company" vs "Delhivery", "net income" vs "profit after tax").
-const createCandidateRelationships = async (facts, search = queryFactVectors, vectorsByFactId = new Map(), adjudicate = adjudicateFactPairs, onProgress = null) => {
+const createCandidateRelationships = async (facts, search = queryFactVectors, vectorsByFactId = new Map(), adjudicate = adjudicateFactPairs, onProgress = null, owner = undefined) => {
   const relationships = new Map();
   const pendingAdjudication = new Map();
   if (!facts.length) return [];
   // Relationships only exist between documents, so skip the queries entirely when nothing else is indexed.
+  const scope = owner ?? facts[0]?.owner;
   const documentIds = [...new Set(facts.map((fact) => asString(fact.documentId)))];
-  const otherFacts = await Fact.countDocuments({ documentId: { $nin: documentIds } });
+  const otherFacts = await Fact.countDocuments({ documentId: { $nin: documentIds }, ...(scope ? { owner: scope } : {}) });
   if (!otherFacts) {
     console.log("No facts from other documents to compare against; skipping matching");
     return [];
@@ -151,7 +149,7 @@ const createCandidateRelationships = async (facts, search = queryFactVectors, ve
   const concurrency = Number(process.env.MATCHING_CONCURRENCY || 8);
   let queried = 0;
   const matchesPerFact = await mapWithConcurrency(facts, concurrency, async (fact) => {
-    const matches = await findCandidateMatches(fact, search, vectorsByFactId.get(fact._id.toString()) ?? null);
+    const matches = await findCandidateMatches(fact, search, vectorsByFactId.get(fact._id.toString()) ?? null, scope);
     queried += 1;
     if (onProgress && (queried % 25 === 0 || queried === facts.length)) await onProgress(queried, facts.length);
     return matches;
@@ -162,7 +160,7 @@ const createCandidateRelationships = async (facts, search = queryFactVectors, ve
       if (relationships.has(key) || pendingAdjudication.has(key)) continue;
       const relationship = buildCandidateRelationship(fact, candidate, similarity);
       if (relationship) {
-        relationships.set(key, relationship);
+        relationships.set(key, { ...relationship, owner: scope });
       } else if (similarity >= FACT_ADJUDICATION_SIMILARITY && pendingAdjudication.size < MAX_ADJUDICATION_PAIRS_PER_DOCUMENT) {
         const compatibility = compareFacts(fact, candidate);
         if (/subject differs|predicate differs/.test(compatibility.reason)) {
@@ -179,7 +177,7 @@ const createCandidateRelationships = async (facts, search = queryFactVectors, ve
       const verdict = verdicts.get(pair.key);
       if (!verdict?.same) continue;
       const relationship = buildCandidateRelationship(pair.factA, pair.factB, pair.similarity, verdict);
-      if (relationship) relationships.set(pair.key, relationship);
+      if (relationship) relationships.set(pair.key, { ...relationship, owner: scope });
     }
   }
   const records = [...relationships.values()];

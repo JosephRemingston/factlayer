@@ -8,7 +8,7 @@ This contract describes the current implementation in `index.js`, the route file
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/health` | Liveness check |
+| `GET` | `/health` | Liveness check (not workspace-scoped) |
 | `POST` | `/api/documents/upload` | Upload 1 to 20 PDFs (`document` field); each starts processing immediately |
 | `GET` | `/api/documents` | List documents with progress |
 | `GET` | `/api/documents/:documentId` | One document with status, stage, and `progress` |
@@ -25,6 +25,7 @@ This contract describes the current implementation in `index.js`, the route file
 | `GET` | `/api/relationships/:relationshipId` | One relationship with both facts populated |
 | `POST` | `/api/ask` | Cited answer across all documents (`{ question, topK }`; `GET /api/ask?q=` also works) |
 | `GET` | `/api/showcase` | Best real example of each of the four assignment cases |
+| `GET` | `/api/providers` | Configured language model providers and their availability |
 
 ## API Base Information
 
@@ -32,14 +33,47 @@ This contract describes the current implementation in `index.js`, the route file
 - API prefix: `/api`
 - JSON endpoints use `Content-Type: application/json` for responses.
 - Upload uses `multipart/form-data`.
-- CORS is enabled through Express `cors()` with its default configuration.
+- CORS accepts `localhost`, any `*.vercel.app` origin (including preview deployments), and ngrok tunnels; `ALLOWED_ORIGINS` adds more, and `*` disables the check. The `x-factlayer-user` and `ngrok-skip-browser-warning` request headers are allowed, and the rate limit headers are exposed to the browser.
 - There is no API version prefix, bearer token, API key, session, or authorization header.
 - Successful controller responses use HTTP `200` and the `SuccessResponse` envelope below. `/health` is the only endpoint with a different response shape.
 - Collection endpoints have no pagination, filtering, or sorting query parameters unless explicitly documented. Document facts and relationships are sorted by `createdAt` in the backend; pages/chunks are sorted by source order.
 
+## Workspaces
+
+Every `/api` request is scoped to a **workspace** named by the `x-factlayer-user` header (or a `?workspace=` query parameter). A workspace holds its own documents, facts, relationships, extraction issues and vector namespaces, so search, answers and the four cases never reach across workspaces. Requests without the header use the workspace `demo`.
+
+```http
+x-factlayer-user: joseph
+```
+
+Names are lowercased and trimmed, may contain letters, digits, spaces, dots, dashes and underscores, must start with a letter or digit, and are capped at 40 characters. An unusable name falls back to `demo`.
+
+This is **not authentication**. There is no password and no ownership proof: anyone who sends the same name gets that workspace. It exists so a person can close the app and come back to their own documents, not to protect data. Requesting another workspace's document, facts, relationships, pages or chunks returns `404 Document not found`.
+
+## Rate Limits
+
+The endpoints that call a language model are limited per workspace: `POST /api/ask` and `GET /api/ask` allow 10 questions per minute, and `POST /api/documents/upload` and `POST /api/documents/:documentId/reprocess` allow 10 per minute. Every response carries `X-RateLimit-Limit`, `X-RateLimit-Remaining` and `X-RateLimit-Reset`; a refused request returns `429` with `Retry-After` and the message `Too many questions. You can send 10 every 60s; try again in Ns.` Limits live in process memory and reset when the server restarts. `ASK_RATE_MAX`, `ASK_RATE_WINDOW_MS`, `UPLOAD_RATE_MAX` and `UPLOAD_RATE_WINDOW_MS` configure them.
+
+## Language Model Providers
+
+Fact extraction, primary entity detection, pair adjudication and answers all run through one provider layer with automatic failover. `LLM_PROVIDER` names the preferred provider (`minimax` by default, with `FACT_EXTRACTION_MODEL`); the other configured provider (`gemini`, with `GEMINI_MODEL`) takes over while the first is rate limited, and the preferred one resumes once its cooldown expires. Because each call is one unit of work, a switch continues from the current page or batch rather than restarting the document. While both providers are limited a call waits and keeps cycling them, up to `LLM_RATE_LIMIT_BUDGET_MS` (five minutes by default), so a page is delayed rather than lost. Facts record the model that produced them in `extractionModel`, so a document processed across a failover shows both.
+
+### `GET /api/providers`
+
+Reports each configured provider, its model, whether it is currently available, and how many seconds remain on a cooldown.
+
+```json
+{ "providers": [
+  { "provider": "minimax", "model": "MiniMax-M3", "available": true, "availableInSeconds": 0 },
+  { "provider": "gemini", "model": "gemini-2.5-flash", "available": false, "availableInSeconds": 42 }
+] }
+```
+
+`POST /api/ask` responses also include `provider` and `model` naming which one answered.
+
 ## Global Headers
 
-For GET requests, no request headers are required. The response is JSON.
+For GET requests, no request headers are required beyond the workspace header. The response is JSON.
 
 For document upload:
 
@@ -91,6 +125,8 @@ Common error messages include:
 - `Document is already being processed`
 - `A question is required (body.question or ?q=)`
 - `topK must be an integer between 1 and 30`
+- `Too many questions. You can send 10 every 60s; try again in Ns.`
+- `Too many uploads. You can send 10 every 60s; try again in Ns.`
 - `Only PDF files are allowed`
 - `File size must not exceed 200 MB`
 - `Invalid document ID`

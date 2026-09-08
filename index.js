@@ -2,6 +2,7 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import connectDatabase from "./configs/database.js";
+import { corsOptions } from "./configs/cors.js";
 import documentRoutes from "./routes/document.routes.js";
 import factRoutes from "./routes/fact.routes.js";
 import relationshipRoutes from "./routes/relationship.routes.js";
@@ -9,15 +10,19 @@ import evidenceRoutes from "./routes/evidence.routes.js";
 import answerRoutes from "./routes/answer.routes.js";
 import showcaseRoutes from "./routes/showcase.routes.js";
 import errorMiddleware from "./middlewares/error.middleware.js";
+import { resolveOwner } from "./middlewares/owner.middleware.js";
 import { resumeInterruptedDocuments } from "./services/document.service.js";
 
 const app = express();
-app.use(cors());
+app.use(cors(corsOptions));
+app.options(/.*/, cors(corsOptions));
 app.use(express.json());
 
 app.get("/health", (req, res) => {
   res.json({ status: "UP", timestamp: new Date().toISOString(), uptime: process.uptime() });
 });
+// Every /api request is scoped to a workspace named by the x-factlayer-user header.
+app.use("/api", resolveOwner);
 app.use("/api/documents", documentRoutes);
 app.use("/api/facts", factRoutes);
 app.use("/api/relationships", relationshipRoutes);

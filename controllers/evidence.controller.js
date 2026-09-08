@@ -8,6 +8,12 @@ import {
   getPageById,
 } from "../services/evidence.service.js";
 import { searchChunks } from "../services/search.service.js";
+import Document from "../models/document.models.js";
+
+// Pages and chunks are only reachable through a document in the caller's workspace.
+const assertOwnedDocument = async (documentId, owner) => {
+  if (!await Document.exists({ _id: documentId, owner })) throw ApiError.notFound("Document not found");
+};
 
 const validateObjectId = (value, label) => {
   if (!mongoose.isValidObjectId(value)) throw ApiError.badRequest(`Invalid ${label}`);
@@ -15,12 +21,14 @@ const validateObjectId = (value, label) => {
 
 const getPagesForDocument = async (req, res) => {
   validateObjectId(req.params.documentId, "document ID");
+  await assertOwnedDocument(req.params.documentId, req.owner);
   const pages = await getDocumentPages(req.params.documentId);
   return ApiResponse.success(res, "Document pages retrieved successfully", { pages });
 };
 
 const getChunksForDocument = async (req, res) => {
   validateObjectId(req.params.documentId, "document ID");
+  await assertOwnedDocument(req.params.documentId, req.owner);
   const chunks = await getDocumentChunks(req.params.documentId);
   return ApiResponse.success(res, "Document chunks retrieved successfully", { chunks });
 };
@@ -29,6 +37,7 @@ const getPage = async (req, res) => {
   validateObjectId(req.params.pageId, "page ID");
   const page = await getPageById(req.params.pageId);
   if (!page) throw ApiError.notFound("Page not found");
+  await assertOwnedDocument(page.documentId, req.owner);
   return ApiResponse.success(res, "Page retrieved successfully", { page });
 };
 
@@ -36,6 +45,7 @@ const getChunk = async (req, res) => {
   validateObjectId(req.params.chunkId, "chunk ID");
   const chunk = await getChunkById(req.params.chunkId);
   if (!chunk) throw ApiError.notFound("Chunk not found");
+  if (chunk.owner !== req.owner) throw ApiError.notFound("Chunk not found");
   return ApiResponse.success(res, "Chunk retrieved successfully", {
     chunk,
     sourceDocument: chunk.documentId,
@@ -49,7 +59,7 @@ const searchChunkRecords = async (req, res) => {
   if (!query) throw ApiError.badRequest("The q query parameter is required");
   const topK = Number(req.query.topK || 10);
   if (!Number.isInteger(topK) || topK < 1 || topK > 100) throw ApiError.badRequest("topK must be an integer between 1 and 100");
-  const results = await searchChunks(query, topK);
+  const results = await searchChunks(query, topK, req.owner);
   return ApiResponse.success(res, "Chunk search completed successfully", { query, results });
 };
 

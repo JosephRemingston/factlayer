@@ -40,12 +40,10 @@ const buildComparisonSignals = (factA, factB, semanticSimilarity = null, overrid
     samePredicate: Boolean(factA.normalizedPredicate && factA.normalizedPredicate === factB.normalizedPredicate) || Boolean(overrides.samePredicate),
     samePeriod: samePeriod(factA, factB),
     sameScope: sameScope(factA, factB),
-    sameUnit: factA.normalizedUnit || factB.normalizedUnit
-      ? factA.normalizedUnit === factB.normalizedUnit
-      : true,
-    sameCurrency: factA.normalizedCurrency || factB.normalizedCurrency
-      ? factA.normalizedCurrency === factB.normalizedCurrency
-      : true,
+    // A missing unit or currency means unknown, not different: only a genuine mismatch on both
+    // sides is contextual, otherwise a differing value would never be reported as a contradiction.
+    sameUnit: factA.normalizedUnit && factB.normalizedUnit ? factA.normalizedUnit === factB.normalizedUnit : null,
+    sameCurrency: factA.normalizedCurrency && factB.normalizedCurrency ? factA.normalizedCurrency === factB.normalizedCurrency : null,
     valueDifference: valueComparison?.difference ?? null,
     percentageDifference: valueComparison?.percentageDifference ?? percentageComparison?.percentageDifference ?? null,
     // Numeric comparison wins; descriptive facts (names, statuses, places) fall back to their objects.

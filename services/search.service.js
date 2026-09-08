@@ -14,12 +14,12 @@ const orderedResults = (matches, records, idField, resultKey) => {
     .filter(Boolean);
 };
 
-const searchFacts = async (query, topK) => {
-  const result = await queryFactVectors(query, topK);
+const searchFacts = async (query, topK, owner) => {
+  const result = await queryFactVectors(query, topK, owner);
   const ids = (result.matches || [])
     .map((match) => match.metadata?.factId)
     .filter((id) => mongoose.isValidObjectId(id));
-  const facts = await Fact.find({ _id: { $in: ids } })
+  const facts = await Fact.find({ _id: { $in: ids }, ...(owner ? { owner } : {}) })
     .populate("documentId")
     .populate("pageId")
     .populate("chunkId")
@@ -27,12 +27,12 @@ const searchFacts = async (query, topK) => {
   return orderedResults(result.matches || [], facts, "factId", "fact");
 };
 
-const searchChunks = async (query, topK) => {
-  const result = await queryChunkVectors(query, topK);
+const searchChunks = async (query, topK, owner) => {
+  const result = await queryChunkVectors(query, topK, owner);
   const ids = (result.matches || [])
     .map((match) => match.metadata?.chunkId)
     .filter((id) => mongoose.isValidObjectId(id));
-  const chunks = await Chunk.find({ _id: { $in: ids } })
+  const chunks = await Chunk.find({ _id: { $in: ids }, ...(owner ? { owner } : {}) })
     .populate("documentId")
     .populate("pageId")
     .lean();

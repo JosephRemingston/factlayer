@@ -4,7 +4,8 @@ import Chunk from "../models/chunk.models.js";
 import Document from "../models/document.models.js";
 import Relationship from "../models/relationship.models.js";
 import { queryChunkVectors, queryFactVectors } from "./embedding.service.js";
-import { defaultInvoke, extractJsonText } from "./extraction.service.js";
+import { extractJsonText } from "./extraction.service.js";
+import { callLLM } from "./llm.service.js";
 
 const asId = (value) => (value === null || value === undefined ? "" : String(value));
 const validIds = (matches, key) => (matches || []).map((match) => match.metadata?.[key]).filter((id) => mongoose.isValidObjectId(id));
@@ -72,25 +73,25 @@ const buildSources = ({ facts, factScores, chunks, chunkScores, documentsById })
 
 // Retrieves the most relevant facts and passages across every processed document, adds the system's
 // reconciliation of related facts, and asks the model for a cited answer.
-const answerQuestion = async (question, { topK = 10, invokeModel = null } = {}) => {
+const answerQuestion = async (question, { topK = 10, invokeModel = null, owner = undefined } = {}) => {
   const [factResult, chunkResult] = await Promise.all([
-    queryFactVectors(question, topK),
-    queryChunkVectors(question, Math.max(3, Math.min(6, Math.ceil(topK / 2)))),
+    queryFactVectors(question, topK, owner),
+    queryChunkVectors(question, Math.max(3, Math.min(6, Math.ceil(topK / 2))), owner),
   ]);
   const factScores = new Map((factResult.matches || []).map((match) => [match.metadata?.factId, match.score ?? 0]));
   const chunkScores = new Map((chunkResult.matches || []).map((match) => [match.metadata?.chunkId, match.score ?? 0]));
   const factIds = validIds(factResult.matches, "factId");
   const chunkIds = validIds(chunkResult.matches, "chunkId");
   const [retrievedFacts, chunks] = await Promise.all([
-    Fact.find({ _id: { $in: factIds } }).lean(),
-    Chunk.find({ _id: { $in: chunkIds } }).lean(),
+    Fact.find({ _id: { $in: factIds }, ...(owner ? { owner } : {}) }).lean(),
+    Chunk.find({ _id: { $in: chunkIds }, ...(owner ? { owner } : {}) }).lean(),
   ]);
   const factById = new Map(retrievedFacts.map((fact) => [asId(fact._id), fact]));
   let facts = factIds.map((id) => factById.get(id)).filter(Boolean);
 
   // Relationships that touch a retrieved fact; the other end is pulled in as evidence too.
   const relationships = facts.length
-    ? await Relationship.find({ status: "reviewed", $or: [{ factA: { $in: facts.map((fact) => fact._id) } }, { factB: { $in: facts.map((fact) => fact._id) } }] })
+    ? await Relationship.find({ status: "reviewed", ...(owner ? { owner } : {}), $or: [{ factA: { $in: facts.map((fact) => fact._id) } }, { factB: { $in: facts.map((fact) => fact._id) } }] })
       .sort({ confidence: -1 }).limit(8).lean()
     : [];
   const missingIds = [...new Set(relationships.flatMap((relationship) => [asId(relationship.factA), asId(relationship.factB)]))]
@@ -129,12 +130,12 @@ const answerQuestion = async (question, { topK = 10, invokeModel = null } = {}) 
   const relationshipListing = relationshipNotes.length
     ? relationshipNotes.map((note) => `- ${note.sourceIds.join(" and ")}: ${note.classification} — ${note.reason}${note.context ? ` (${note.context})` : ""}`).join("\n")
     : "- none";
-  const invoke = invokeModel || defaultInvoke;
+  const invoke = invokeModel || callLLM;
   const response = await invoke([
     { role: "system", content: answerSystemPrompt },
     { role: "user", content: `QUESTION: ${question}\n\nSOURCES:\n${sourceListing}\n\nRELATIONSHIPS (system reconciliation of related facts):\n${relationshipListing}` },
-  ], { maxTokens: 1500 });
-  const payload = typeof response === "string" ? response : response?.content ?? response;
+  ], { maxTokens: 1500, label: "answer" });
+  const payload = typeof response === "string" ? response : response?.text ?? response?.content ?? response;
   let parsed;
   try {
     parsed = JSON.parse(extractJsonText(String(payload)));
@@ -153,6 +154,8 @@ const answerQuestion = async (question, { topK = 10, invokeModel = null } = {}) 
   }
   return {
     question,
+    provider: typeof response === "object" ? response?.provider ?? null : null,
+    model: typeof response === "object" ? response?.model ?? null : null,
     answer: String(parsed.answer || "").trim(),
     confidence: Math.max(0, Math.min(1, Number(parsed.confidence ?? 0))),
     coverage: ["full", "partial", "none"].includes(parsed.coverage) ? parsed.coverage : "partial",

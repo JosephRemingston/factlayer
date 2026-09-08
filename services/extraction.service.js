@@ -1,7 +1,6 @@
-import { withRetry } from "../utils/retry.js";
+import { callLLM } from "./llm.service.js";
 import { FACT_ADJUDICATION_BATCH_SIZE } from "../utils/constants.js";
 
-const DEFAULT_MINIMAX_API_BASE = "https://api.minimax.io/v1";
 const EXTRACTION_MODEL = () => process.env.FACT_EXTRACTION_MODEL || "MiniMax-M3";
 
 const extractionSystemPrompt = `You extract meaningful, comparable facts from document chunks.
@@ -88,7 +87,7 @@ class FactValidationError extends Error {
   }
 }
 
-const validateFact = (fact, chunk) => {
+const validateFact = (fact, chunk, model = null) => {
   if (!fact || typeof fact !== "object") throw new FactValidationError("missing_field", "Fact must be an object");
   if (!String(fact.subject || "").trim()) throw new FactValidationError("missing_field", "Fact subject is required");
   if (!String(fact.predicate || "").trim()) throw new FactValidationError("missing_field", "Fact predicate is required");
@@ -107,7 +106,7 @@ const validateFact = (fact, chunk) => {
     pageId: chunk.pageId,
     chunkId: chunk._id,
     pageNumber: chunk.pageNumber ?? null,
-    extractionModel: EXTRACTION_MODEL(),
+    extractionModel: model || EXTRACTION_MODEL(),
   };
 };
 
@@ -125,11 +124,11 @@ const ISSUE_HANDLING = {
 };
 
 // `onIssue` receives every rejected candidate so callers can persist failures as evidence.
-const collectValidFacts = (facts, chunk, onIssue = null) => {
+const collectValidFacts = (facts, chunk, onIssue = null, model = null) => {
   const valid = [];
   for (const fact of facts) {
     try {
-      valid.push(validateFact(fact, chunk));
+      valid.push(validateFact(fact, chunk, model));
     } catch (error) {
       console.warn(`Skipping fact from chunk ${chunk._id}: ${error.message}`);
       const type = error.type || "missing_field";
@@ -149,61 +148,21 @@ const throttle = async () => {
   if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
 };
 
-const getMinimaxConfig = () => {
-  if (!process.env.MINIMAX_API_KEY) throw new Error("MINIMAX_API_KEY is required for fact extraction");
-  return {
-    apiKey: process.env.MINIMAX_API_KEY,
-    baseUrl: (process.env.MINIMAX_API_BASE || DEFAULT_MINIMAX_API_BASE).replace(/\/+$/, ""),
-  };
-};
-
-// Calls MiniMax's OpenAI-compatible chat completions endpoint and returns the assistant message text.
-const invokeMinimax = async (messages, { maxTokens } = {}) => {
-  const { apiKey, baseUrl } = getMinimaxConfig();
-  const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({
-      model: EXTRACTION_MODEL(),
-      messages,
-      temperature: Number(process.env.FACT_EXTRACTION_TEMPERATURE ?? 0.1),
-      max_tokens: maxTokens ?? Number(process.env.FACT_EXTRACTION_MAX_TOKENS ?? 8192),
-      response_format: { type: "json_object" },
-      // MiniMax-M3 thinks by default; structured extraction does not need it, so skip it unless configured.
-      ...(/MiniMax-M3/i.test(EXTRACTION_MODEL()) ? { thinking: { type: process.env.MINIMAX_THINKING || "disabled" } } : {}),
-    }),
-  });
-  const payload = await response.json().catch(() => null);
-  if (!response.ok) {
-    const error = new Error(`MiniMax chat completion failed with status ${response.status}: ${payload?.error?.message || payload?.base_resp?.status_msg || response.statusText}`);
-    error.status = response.status;
-    throw error;
-  }
-  // MiniMax reports some failures (quota, invalid key) inside base_resp with HTTP 200.
-  if (payload?.base_resp && payload.base_resp.status_code !== 0) {
-    const error = new Error(`MiniMax chat completion failed: ${payload.base_resp.status_msg} (code ${payload.base_resp.status_code})`);
-    error.status = payload.base_resp.status_code === 1002 ? 429 : 400;
-    throw error;
-  }
-  const content = payload?.choices?.[0]?.message?.content;
-  if (typeof content !== "string" || !content.trim()) throw new Error("MiniMax returned an empty completion");
-  return content;
-};
-
-const defaultInvoke = async (messages, options) => {
-  await throttle();
-  return withRetry(() => invokeMinimax(messages, options), { label: "MiniMax completion", retries: 6 });
-};
+// Every model call goes through the provider layer, so a rate limit on one provider transparently
+// continues on the other with the same request.
+const defaultInvoke = (messages, options = {}) => callLLM(messages, { maxTokens: Number(process.env.FACT_EXTRACTION_MAX_TOKENS ?? 8192), ...options });
 
 const requestFactExtraction = async (chunk, invokeModel = null, context = {}) => {
   const invoke = invokeModel || defaultInvoke;
   return invoke([
     { role: "system", content: extractionSystemPrompt },
     { role: "user", content: buildExtractionPrompt(chunk, context) },
-  ]);
+  ], { label: `extraction (page ${chunk.pageNumber ?? "?"})` });
 };
 
-const toPayload = (response) => (typeof response === "string" ? response : response?.content ?? response);
+// Accepts a provider result ({text, model}), a LangChain-style {content}, or a bare string.
+const toPayload = (response) => (typeof response === "string" ? response : response?.text ?? response?.content ?? response);
+const toModel = (response) => (typeof response === "string" ? null : response?.model ?? null);
 
 // One corrective re-request when the model returns unparseable JSON; models occasionally emit
 // trailing commentary, comments, or truncated output despite the instructions.
@@ -211,7 +170,7 @@ const extractFactsFromChunk = async (chunk, invokeModel = null, context = {}) =>
   const onIssue = typeof context.onIssue === "function" ? context.onIssue : null;
   const first = await requestFactExtraction(chunk, invokeModel, context);
   try {
-    return collectValidFacts(parseExtractionResponse(toPayload(first)), chunk, onIssue);
+    return collectValidFacts(parseExtractionResponse(toPayload(first)), chunk, onIssue, toModel(first));
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
     const snippet = String(toPayload(first) ?? "").slice(0, 200).replace(/\s+/g, " ");
@@ -222,8 +181,8 @@ const extractFactsFromChunk = async (chunk, invokeModel = null, context = {}) =>
   const second = await invoke([
     { role: "system", content: extractionSystemPrompt },
     { role: "user", content: `${buildExtractionPrompt(chunk, context)}\n\nYour previous reply was not valid JSON. Reply with exactly one JSON object of the form {"facts": [...]} and nothing else.` },
-  ]);
-  return collectValidFacts(parseExtractionResponse(toPayload(second)), chunk, onIssue);
+  ], { label: `extraction repair (page ${chunk.pageNumber ?? "?"})` });
+  return collectValidFacts(parseExtractionResponse(toPayload(second)), chunk, onIssue, toModel(second));
 };
 
 // Identifies the organization a document is primarily about from its opening pages, so that
@@ -233,7 +192,7 @@ const detectPrimaryEntity = async (openingText, invokeModel = null) => {
   const response = await invoke([
     { role: "system", content: 'Identify the single organization a document is primarily about. Return JSON only: {"entity": "<official name without suffixes like Limited, Ltd, Inc, Plc>", "confidence": <0-1>}. If the document is about a country or economy rather than a company (for example a central bank or IMF report about India), return the country or institution name. If unclear, return {"entity": null, "confidence": 0}.' },
     { role: "user", content: `OPENING PAGES:\n${String(openingText || "").slice(0, 6000)}` },
-  ], { maxTokens: 200 });
+  ], { maxTokens: 200, label: "primary entity" });
   const parsed = JSON.parse(extractJsonText(toPayload(response)));
   const entity = typeof parsed?.entity === "string" ? parsed.entity.trim() : null;
   return entity && (parsed.confidence ?? 0) >= 0.5 ? entity : null;
@@ -251,7 +210,7 @@ const adjudicateFactPairs = async (pairs, invokeModel = null) => {
     const response = await invoke([
       { role: "system", content: 'You decide whether two extracted facts describe the same metric or attribute of the same entity, so that their values can be compared. Differences in period, scope, units, or the values themselves do NOT matter here; only whether subject and metric are the same thing expressed differently (for example "Delhivery" vs "the company", "revenue from services" vs "revenue from operations", "net income" vs "profit after tax"). Return JSON only: {"verdicts": [{"pair": <number>, "same": <true|false>, "reason": "<short>"}]} with one entry per pair.' },
       { role: "user", content: `PAIRS:\n${listing}` },
-    ], { maxTokens: 2048 });
+    ], { maxTokens: 2048, label: "adjudication" });
     let parsed;
     try {
       parsed = JSON.parse(extractJsonText(toPayload(response)));
@@ -270,7 +229,6 @@ const adjudicateFactPairs = async (pairs, invokeModel = null) => {
 export {
   ISSUE_HANDLING,
   FactValidationError,
-  invokeMinimax,
   defaultInvoke,
   buildExtractionPrompt,
   extractJsonText,

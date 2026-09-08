@@ -17,7 +17,7 @@ const uploadDocument = async (req, res) => {
   if (!files.length) throw ApiError.badRequest("At least one PDF file is required in the document field");
   const documents = [];
   for (const file of files) {
-    const { document, buffer } = await createDocument(file);
+    const { document, buffer } = await createDocument(file, req.owner);
     // Processing runs in this process; the response returns as soon as the files are stored.
     startDocumentProcessing(document._id, { buffer });
     documents.push(withProgress(document.toObject()));
@@ -28,13 +28,13 @@ const uploadDocument = async (req, res) => {
 
 const getDocument = async (req, res) => {
   if (!mongoose.isValidObjectId(req.params.documentId)) throw ApiError.badRequest("Invalid document ID");
-  const document = await getDocumentById(req.params.documentId);
+  const document = await getDocumentById(req.params.documentId, req.owner);
   if (!document) throw ApiError.notFound("Document not found");
   return ApiResponse.success(res, "Document retrieved successfully", { document });
 };
 
 const getDocuments = async (req, res) => {
-  const documents = await listDocuments();
+  const documents = await listDocuments(req.owner);
   return ApiResponse.success(res, "Documents retrieved successfully", { documents });
 };
 
@@ -42,7 +42,7 @@ const getDocuments = async (req, res) => {
 // to discard all derived data and start from the PDF again.
 const reprocessDocument = async (req, res) => {
   if (!mongoose.isValidObjectId(req.params.documentId)) throw ApiError.badRequest("Invalid document ID");
-  const document = await getDocumentById(req.params.documentId);
+  const document = await getDocumentById(req.params.documentId, req.owner);
   if (!document) throw ApiError.notFound("Document not found");
   if (isDocumentBusy(document)) throw ApiError.badRequest("Document is already being processed");
   const reset = String(req.query.reset || "").toLowerCase() === "true";

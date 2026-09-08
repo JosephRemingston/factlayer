@@ -4,6 +4,7 @@ import mongoose from "mongoose";
 // failures are inspectable evidence rather than log lines.
 const extractionIssueSchema = new mongoose.Schema(
   {
+    owner: { type: String, required: true, default: "demo", index: true },
     documentId: { type: mongoose.Schema.Types.ObjectId, ref: "Document", required: true, index: true },
     chunkId: { type: mongoose.Schema.Types.ObjectId, ref: "Chunk", default: null },
     pageNumber: { type: Number, default: null },

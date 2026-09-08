@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 
 const relationshipSchema = new mongoose.Schema(
   {
+    owner: { type: String, required: true, default: "demo", index: true },
     factA: { type: mongoose.Schema.Types.ObjectId, ref: "Fact", required: true },
     factB: { type: mongoose.Schema.Types.ObjectId, ref: "Fact", required: true },
     relationshipType: {

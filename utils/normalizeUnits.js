@@ -1,5 +1,12 @@
 const magnitudeMap = {
   k: 1e3,
+  lakh: 1e5,
+  lakhs: 1e5,
+  lac: 1e5,
+  lacs: 1e5,
+  crore: 1e7,
+  crores: 1e7,
+  cr: 1e7,
   thousand: 1e3,
   thousands: 1e3,
   "000": 1e3,
@@ -100,6 +107,23 @@ const findMagnitude = (value) => {
   return alias ? { label: alias, multiplier: magnitudeMap[alias] } : { label: null, multiplier: 1 };
 };
 
+// Identifiers such as a CIN (U63090DL2011PLC221234) or a PAN (AAACD4471C) contain digit runs but are
+// not quantities. A value counts as numeric only when everything except a currency, magnitude word,
+// percent marker or punctuation is a plain number, so identifiers are never silently reduced to a number.
+const isNumericValue = (text) => {
+  let residue = String(text).toLowerCase();
+  for (const alias of Object.keys(currencyAliases).sort((left, right) => right.length - left.length)) {
+    residue = residue.split(alias).join(" ");
+  }
+  for (const alias of Object.keys(magnitudeMap).sort((left, right) => right.length - left.length)) {
+    residue = residue.replace(new RegExp(`(^|[^a-z])${alias}([^a-z]|$)`, "g"), "$1 $2");
+  }
+  residue = residue
+    .replace(/\b(percent|percentage|approximately|approx|about|around|rs|inr|usd)\b/g, " ")
+    .replace(/[%,()\s]/g, "");
+  return /^[-+]?\d*\.?\d+$/.test(residue);
+};
+
 const normalizeNumber = (value, unit = "") => {
   if (value === null || value === undefined || value === "") return null;
   if (typeof value === "number" && Number.isFinite(value)) {
@@ -108,8 +132,10 @@ const normalizeNumber = (value, unit = "") => {
   }
 
   const text = String(value).trim();
+  const words = parseNumberWords(text.replace(/\b(percent|percentage)\b/gi, "").trim());
+  if (words === null && !isNumericValue(text)) return null;
   const numericMatch = text.replace(/,/g, "").match(/[-+]?\d*\.?\d+/);
-  const parsed = numericMatch ? Number(numericMatch[0]) : parseNumberWords(text.replace(/\b(percent|percentage)\b/gi, "").trim());
+  const parsed = numericMatch ? Number(numericMatch[0]) : words;
   if (!Number.isFinite(parsed)) return null;
   const magnitude = findMagnitude(`${text} ${unit}`);
   return { value: parsed * magnitude.multiplier, magnitude: magnitude.label };
@@ -136,4 +162,4 @@ const normalizeUnit = (unit, value = "") => {
   return String(unit || "").trim().toLowerCase() || null;
 };
 
-export { normalizeCurrency, normalizeNumber, normalizePercentage, normalizeUnit };
+export { normalizeCurrency, normalizeNumber, normalizePercentage, normalizeUnit, isNumericValue };

@@ -64,8 +64,8 @@ const toCase = (relationship) => ({
   },
 });
 
-const pickCases = async (type, limit = 3) => {
-  const candidates = await Relationship.find({ relationshipType: type, status: "reviewed" })
+const pickCases = async (type, limit = 3, owner) => {
+  const candidates = await Relationship.find({ relationshipType: type, status: "reviewed", ...(owner ? { owner } : {}) })
     .sort({ confidence: -1 }).limit(60).populate(factPopulation).lean();
   const crossDocument = candidates.filter((relationship) => relationship.factA && relationship.factB
     && asId(relationship.factA.documentId?._id) !== asId(relationship.factB.documentId?._id));
@@ -80,18 +80,19 @@ const IMPROVEMENTS = [
 ];
 
 // One best real example of each assignment case, plus alternatives and the failures the pipeline caught.
-const getShowcase = async () => {
+const getShowcase = async (owner) => {
+  const scope = owner ? { owner } : {};
   const [corroborated, contradiction, contextual, uncertain, relationshipCounts, issueCounts, documents] = await Promise.all([
-    pickCases("corroborated"),
-    pickCases("contradiction"),
-    pickCases("contextual_difference"),
-    pickCases("uncertain", 2),
-    Relationship.aggregate([{ $match: { status: "reviewed" } }, { $group: { _id: "$relationshipType", count: { $sum: 1 } } }]),
-    ExtractionIssue.aggregate([{ $group: { _id: "$type", count: { $sum: 1 } } }]),
-    Document.find().select("originalFileName status primaryEntity factCount relationshipCount extractionIssueCount pageCount").sort({ createdAt: 1 }).lean(),
+    pickCases("corroborated", 3, owner),
+    pickCases("contradiction", 3, owner),
+    pickCases("contextual_difference", 3, owner),
+    pickCases("uncertain", 2, owner),
+    Relationship.aggregate([{ $match: { status: "reviewed", ...scope } }, { $group: { _id: "$relationshipType", count: { $sum: 1 } } }]),
+    ExtractionIssue.aggregate([{ $match: scope }, { $group: { _id: "$type", count: { $sum: 1 } } }]),
+    Document.find(scope).select("originalFileName status primaryEntity factCount relationshipCount extractionIssueCount pageCount").sort({ createdAt: 1 }).lean(),
   ]);
   const issueExamples = await Promise.all((issueCounts.map((row) => row._id)).map(async (type) => {
-    const examples = await ExtractionIssue.find({ type }).sort({ createdAt: -1 }).limit(2).populate("documentId", "originalFileName").lean();
+    const examples = await ExtractionIssue.find({ type, ...scope }).sort({ createdAt: -1 }).limit(2).populate("documentId", "originalFileName").lean();
     return examples.map((issue) => ({
       type,
       documentName: issue.documentId?.originalFileName || null,
@@ -102,7 +103,7 @@ const getShowcase = async () => {
       outputPreview: issue.outputPreview,
     }));
   }));
-  const factCount = await Fact.countDocuments();
+  const factCount = await Fact.countDocuments(scope);
   return {
     documents: documents.map((document) => ({ id: asId(document._id), name: document.originalFileName, status: document.status, primaryEntity: document.primaryEntity, pages: document.pageCount, facts: document.factCount, relationships: document.relationshipCount, extractionIssues: document.extractionIssueCount })),
     totals: { facts: factCount, relationships: Object.fromEntries(relationshipCounts.map((row) => [row._id, row.count])), extractionIssues: Object.fromEntries(issueCounts.map((row) => [row._id, row.count])) },

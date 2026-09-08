@@ -7,7 +7,7 @@ Built for the Superjoin engineering intern assignment. Backend in this repo; the
 | | |
 |---|---|
 | **Stack** | Node.js 20 · Express 5 · MongoDB (Mongoose) · Pinecone (vectors + hosted embeddings) · AWS S3 · MiniMax-M3 · React (TanStack Start) |
-| **Tests** | `npm test` — 31 unit tests covering chunking, grounding, normalization, comparison, adjudication, reconciliation |
+| **Tests** | `npm test` — 49 unit tests covering chunking, grounding, normalization, comparison, adjudication, reconciliation, workspaces, provider failover, rate limits, CORS |
 | **Video demo** | _Add link here_ |
 | **Live docs** | [API reference](API.md) · [System design](docs/system-design.svg) · [API design](docs/api-design.svg) |
 
@@ -19,6 +19,14 @@ Built for the Superjoin engineering intern assignment. Backend in this repo; the
 2. **Links facts across documents.** Facts are embedded by identity ("Delhivery | revenue | FY24 | consolidated"), matched across documents, and classified by deterministic rules: `corroborated`, `contradiction`, `contextual_difference`, or `uncertain`. Near-miss wording ("the company" vs "Delhivery", "revenue from operations" vs "revenue from services") is settled by an LLM adjudicator before the rules run.
 3. **Answers with proof.** `POST /api/ask` returns a short answer where every claim carries a `[S#]` citation resolving to the document name, page number, and verbatim quote, and points out when sources disagree.
 4. **Shows its work.** `GET /api/showcase` and the `/cases` page surface the best real example of each assignment case, including the extraction failures the pipeline caught and how it handled them.
+
+---
+
+## Workspaces
+
+Anyone opening the app enters a name, and everything they upload lives under it. Close the tab, come back later, even from another browser, enter the same name and the documents, facts and relationships are exactly as they were. The name travels on every request as `x-factlayer-user`; documents, facts, relationships, extraction issues and Pinecone namespaces are all scoped by it, so one person's documents never appear in another's search, answers or cases.
+
+It is deliberately not a login. There is no password, and anyone entering the same name opens that workspace; the sign-in screen says so. It exists so a reviewer can pick up where they left off, not to protect data. Requests with no name land in the `demo` workspace, which holds the sample documents.
 
 ---
 
@@ -48,9 +56,9 @@ Each case shows both facts with document, page, value, period, scope, the quoted
 | Stage | What happens | Why it is built this way |
 |---|---|---|
 | Parse and chunk | `pdf-parse` yields one record per page; a page is one chunk unless it exceeds 8,000 characters. Short pages with no digits are skipped. | Page-level chunks keep evidence page-accurate and cut model calls by two thirds versus paragraph chunks. |
-| Embed chunks | Pinecone-hosted `llama-text-embed-v2`, 1024 dimensions, batches of 64. | No separate embedding vendor or quota; the same key that stores vectors produces them. |
+| Embed chunks | Pinecone-hosted `llama-text-embed-v2`, 1024 dimensions. Batches are sized by estimated tokens, and a process-wide limiter holds total spend under the provider's per-minute cap. | No separate embedding vendor or quota. Page-sized chunks are large, so a fixed batch count would exceed the cap once two documents ran at once. |
 | Primary entity | One model call on the opening pages identifies the organization the document is about. | Lets "the company", "we", and "the group" resolve to a real subject that can match across documents. |
-| Extract facts | 8 pages in parallel to MiniMax-M3 in JSON mode with a fixed schema; 429s back off, malformed JSON is re-requested once. | Facts persist per page, so an interrupted run resumes instead of restarting. |
+| Extract facts | 12 pages in parallel in JSON mode with a fixed schema; a rate-limited provider hands the page to the other one and a call waits rather than dropping the page, malformed JSON is re-requested once. | Facts persist per page, so an interrupted run resumes instead of restarting. Two providers let the pool run wider without stalling. |
 | Ground and validate | The quoted `sourceText` must exist on the page, ignoring punctuation, quote style, hyphenation, and number spacing. Facts need a value or an object. | Invented evidence never enters the store; rejections become case-4 evidence. |
 | Normalize | Subjects, predicates, magnitudes (crore, million, bn), currencies, percentages, fiscal periods, and scopes get canonical forms while raw values are kept. | Comparison works on canonical fields; the UI still shows the original wording. |
 | Match | Each fact's identity string is embedded and queried against other documents' facts, 8 queries in parallel; skipped entirely when no other document has facts. | Identity embeddings match "what is being measured", not sentence style. |
@@ -61,9 +69,19 @@ Each case shows both facts with document, page, value, period, scope, the quoted
 
 ---
 
+## Providers and limits
+
+Every model call, whether extraction, entity detection, adjudication or answering, goes through one provider layer. MiniMax-M3 is preferred and Gemini 2.5 Flash is the fallback, either configurable. When a provider reports a rate limit it is parked for the delay it suggests and the same request continues on the other provider; because a call is one page or one batch, the switch resumes exactly where the first provider stopped. The preferred provider is used again as soon as its cooldown expires, and if both are parked the call waits for the first to free up. `GET /api/providers` shows the current state, and each fact records the model that produced it.
+
+The endpoints that cost a model call are rate limited per workspace: 10 questions and 10 uploads per minute, with `Retry-After` and `X-RateLimit-*` headers on every response. One tester cannot exhaust the shared providers for everyone else.
+
+---
+
 ## API design
 
 ![API design](docs/api-design.svg)
+
+All `/api` requests carry the workspace name in the `x-factlayer-user` header.
 
 | Endpoint | Purpose |
 |---|---|
@@ -73,7 +91,8 @@ Each case shows both facts with document, page, value, period, scope, the quoted
 | `GET /api/facts/document/:id` · `GET /api/facts/:id` | Facts with evidence links |
 | `GET /api/facts/search?q=` · `GET /api/search/chunks?q=` | Semantic search over facts or passages |
 | `GET /api/relationships/document/:id` · `GET /api/relationships/:id` | Classified relationships with reasoning |
-| `POST /api/ask` | Cited answer across all documents |
+| `POST /api/ask` | Cited answer across all documents (rate limited) |
+| `GET /api/providers` | Provider availability and cooldowns |
 | `GET /api/showcase` | The four cases with evidence |
 | `GET /api/documents/:id/pages` · `/chunks` · `GET /api/pages/:id` · `GET /api/chunks/:id` | Evidence text |
 | `GET /health` | Liveness |
@@ -86,14 +105,14 @@ Every response uses `{ statusCode, message, data, success }`. Full request and r
 
 | Collection | Holds | Evidence fields |
 |---|---|---|
-| `documents` | File metadata, status, stage, progress counters, primary entity, processing lease | `s3Key` |
+| `documents` | Workspace owner, file metadata, status, stage, progress counters, primary entity, processing lease | `s3Key` |
 | `pages` | Page number and text | `documentId` |
 | `chunks` | Page-sized text, extraction status, fact count, vector id | `documentId`, `pageId`, `pageNumber` |
 | `facts` | Raw and normalized subject, predicate, value, unit, currency, period, scope; confidence; identity string for matching | `documentId`, `pageId`, `chunkId`, `pageNumber`, `sourceText` |
 | `relationships` | Pair of facts, classification, similarity and matching scores, comparison signals, reason, summary, key similarities and differences | Evidence entry for each fact |
 | `extractionissues` | Type, message, the rejected candidate or malformed output preview, and the handling applied | `documentId`, `chunkId`, `pageNumber` |
 
-MongoDB is the source of truth; Pinecone holds chunk vectors (namespace `factlayer`) and fact-identity vectors (namespace `facts`) and is only used to find candidates that are then hydrated from MongoDB.
+MongoDB is the source of truth; Pinecone holds chunk vectors (namespace `chunks__<workspace>`) and fact-identity vectors (namespace `facts__<workspace>`) and is only used to find candidates that are then hydrated from MongoDB.
 
 ---
 
@@ -104,7 +123,7 @@ MongoDB is the source of truth; Pinecone holds chunk vectors (namespace `factlay
 - **Evidence is mandatory.** A fact without a verbatim quote on its page is rejected rather than stored with lower confidence. This costs some recall (about 6 percent of candidates on the sample documents) and buys trust in everything that remains.
 - **Page-level chunks.** Fewer model calls and exact page citations, at the cost of coarser passage search results.
 - **Provider isolation.** Extraction, adjudication, and answering each go through one function in `services/extraction.service.js`; embeddings through one function per provider in `services/embedding.service.js`. Swapping MiniMax for Claude or Gemini, or Pinecone inference for another embedder, is a contained change.
-- **Rate limits are a first-class concern.** Retries honour provider-suggested delays, per-minute windows, and burst limits; concurrency is configurable per stage. On a MiniMax Coding Plan a 100-page document processes in about 3 minutes.
+- **Rate limits are a first-class concern.** Retries honour provider-suggested delays, per-minute windows, and burst limits; concurrency is configurable per stage; and a rate-limited provider hands work to the other rather than stalling. Two providers plus a wider pool cut extraction of a 100-page document from about 3.5 minutes to about 2.5. Pushing the pool to 20 was measurably worse: both free tiers were parked at once often enough that a page ran out of failover attempts, so a call now waits within a budget instead of giving up, and the pool sits at 12.
 
 ---
 
@@ -128,7 +147,7 @@ npm install
 npm run dev            # http://localhost:8080, API base configurable in the top-right setting
 ```
 
-Then upload the three starter PDFs from `data/starter-datasets/delhivery/` in one go, watch the progress bars, and open **Cases** and **Ask**.
+Enter a name to open a workspace, upload the three starter PDFs from `data/starter-datasets/delhivery/` in one go, watch the progress bars, and open **Cases** and **Ask**. Come back later with the same name and everything is still there.
 
 **Environment variables** (see `.env.example`):
 
@@ -138,10 +157,28 @@ Then upload the three starter PDFs from `data/starter-datasets/delhivery/` in on
 | `AWS_REGION`, `AWS_BUCKET_NAME`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Original PDF storage |
 | `PINECONE_API_KEY`, `PINECONE_INDEX_NAME`, `PINECONE_NAMESPACE`, `PINECONE_CLOUD`, `PINECONE_REGION` | Vector index; created with `EMBEDDING_DIMENSION` if missing |
 | `EMBEDDING_PROVIDER` (`pinecone` or `minimax`), `PINECONE_EMBEDDING_MODEL`, `MINIMAX_EMBEDDING_MODEL`, `EMBEDDING_DIMENSION` | Embedding model and dimension; must match the index |
-| `MINIMAX_API_KEY`, `MINIMAX_API_BASE`, `FACT_EXTRACTION_MODEL` | LLM for extraction, adjudication, and answers |
+| `MINIMAX_API_KEY`, `MINIMAX_API_BASE`, `FACT_EXTRACTION_MODEL` | Primary LLM for extraction, adjudication, and answers |
+| `GEMINI_API_KEY`, `GEMINI_MODEL`, `LLM_PROVIDER` | Fallback LLM used automatically while the primary is rate limited |
+| `ASK_RATE_MAX`, `ASK_RATE_WINDOW_MS`, `UPLOAD_RATE_MAX`, `UPLOAD_RATE_WINDOW_MS` | Per-workspace limits on the model-backed endpoints |
 | `PROCESSING_CONCURRENCY`, `EXTRACTION_CONCURRENCY`, `MATCHING_CONCURRENCY`, `EXTRACTION_REQUESTS_PER_MINUTE` | Parallelism per stage and optional pacing |
 
 Keep `.env` out of git; it is ignored.
+
+---
+
+## Deploying
+
+**Frontend on Vercel.** `vercel.json` in `../factlayer_frontend` builds with Nitro's Vercel preset and emits `.vercel/output`, which Vercel serves directly. Import the repository, set the project root to the frontend folder, and set one environment variable:
+
+| Variable | Value |
+|---|---|
+| `VITE_API_BASE` | the public URL of your API, for example `https://factlayer.onrender.com` |
+
+Anyone using the app can still point at a different API through the "Service" control in the header; the variable only sets the default.
+
+**Backend somewhere that keeps a process alive.** The API is not a good fit for serverless: it processes documents in the same process for minutes after the upload response returns, holds a per-document lease with a heartbeat, and resumes interrupted work on startup. Any host that runs a long-lived Node process works, such as Render, Railway, Fly.io, or a small VM. Provide the environment variables listed above, and expose the port from `PORT`.
+
+CORS is already configured for this split: `localhost`, any `*.vercel.app` deployment including per-commit preview URLs, and ngrok tunnels are accepted, and `ALLOWED_ORIGINS` adds your own domains (`*` disables the check). Look-alike hosts such as `vercel.app.evil.com` are refused.
 
 ---
 
@@ -149,6 +186,10 @@ Keep `.env` out of git; it is ignored.
 
 `npm test` runs 31 tests with Node's built-in runner and no external services:
 
+- provider failover: switching on a rate limit, skipping a parked provider, recovering when both are limited, and not masking real errors
+- rate limiter burst, refusal and per-workspace budgets
+- workspace name rules and per-workspace vector namespaces
+- identifier values (a company identity number) never compared as numbers
 - chunking determinism and page metadata
 - evidence grounding, including quote-style, hyphenation, and number-spacing tolerance, and rejection of altered evidence
 - unit, currency, percentage, and period normalization, including idempotence
@@ -156,7 +197,7 @@ Keep `.env` out of git; it is ignored.
 - adjudicator overrides and descriptive-fact contradictions
 - reconciliation outcomes for equal, contradictory, and context-differing facts
 
-End-to-end behaviour was verified by uploading the starter PDFs against live MongoDB, S3, Pinecone, and MiniMax.
+End-to-end behaviour was verified by uploading the three starter PDFs against live MongoDB, S3, Pinecone, and MiniMax: 2,812 facts and 790 relationships across the set, with all four cases present.
 
 ---
 
@@ -165,8 +206,8 @@ End-to-end behaviour was verified by uploading the starter PDFs against live Mon
 - **Facts without a stated period** are classified `uncertain` when values differ, because a change over time cannot be told from a contradiction. Inferring periods from nearby headings and document dates is the next improvement.
 - **Adjudication is batched but still model-bound.** A per-document alias table for subsidiaries and segments would cut those calls.
 - **Passage search returns whole pages** since chunks are page-sized; a secondary paragraph index would sharpen it.
-- **No authentication** and open CORS; this is a prototype.
-- **Rate limits dominate speed.** Extraction time is set by the LLM plan, not the pipeline. A pay-as-you-go key or a paid Gemini or Claude key removes the burst limits.
+- **Workspaces are names, not accounts.** No password, so they separate testers rather than protect data. Real use would need authentication, and CORS is open.
+- **Rate limits still dominate speed.** Failover between two free tiers helps, but at 20 pages in parallel both providers are sometimes parked at once and calls wait. A paid key on either provider would remove that ceiling.
 - **Single-process scaling.** Multiple API instances would need a shared queue again; the lease already prevents double processing.
 
 ---

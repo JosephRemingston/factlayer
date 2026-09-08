@@ -2,6 +2,8 @@ import mongoose from "mongoose";
 
 const chunkSchema = new mongoose.Schema(
   {
+    // Workspace this record belongs to; every read is scoped by it.
+    owner: { type: String, required: true, default: "demo", index: true },
     documentId: { type: mongoose.Schema.Types.ObjectId, ref: "Document", required: true, index: true },
     pageId: { type: mongoose.Schema.Types.ObjectId, ref: "Page", required: true, index: true },
     pageNumber: { type: Number, required: true },

@@ -21,7 +21,7 @@ import {
 import os from "node:os";
 import crypto from "node:crypto";
 import { createLimiter, mapWithConcurrency } from "../utils/concurrency.js";
-import { MIN_EXTRACTION_CHARACTERS, PROCESSING_LEASE_MS, PROCESSING_HEARTBEAT_MS } from "../utils/constants.js";
+import { DEFAULT_OWNER, MIN_EXTRACTION_CHARACTERS, PROCESSING_LEASE_MS, PROCESSING_HEARTBEAT_MS } from "../utils/constants.js";
 
 // Identifies this server process so that a document is processed by one instance at a time.
 const INSTANCE_ID = `${os.hostname()}:${process.pid}:${crypto.randomBytes(3).toString("hex")}`;
@@ -77,9 +77,10 @@ const getS3ObjectBuffer = async (s3Key) => {
 
 // Stores the PDF in S3 and records it; the bytes are returned so the first processing run can start
 // immediately without a round trip back to S3.
-const createDocument = async (file) => {
+const createDocument = async (file, owner = DEFAULT_OWNER) => {
   const buffer = file.buffer || await fsPromises.readFile(file.path);
   const document = new Document({
+    owner,
     originalFileName: file.originalname,
     s3Key: "pending",
     mimeType: file.mimetype,
@@ -106,11 +107,12 @@ const createDocument = async (file) => {
 };
 
 // Removes everything derived from a document (vectors, relationships, facts, chunks, pages).
-const clearDerivedData = async (documentId) => {
+const clearDerivedData = async (documentId, owner) => {
+  await Document.updateOne({ _id: documentId }, { $set: { chunksEmbedded: false } });
   const previousChunks = await Chunk.find({ documentId }).select("vectorId").lean();
   const previousFacts = await Fact.find({ documentId }).select("_id").lean();
-  await deleteChunkVectors(previousChunks.map((chunk) => chunk.vectorId));
-  await deleteFactVectors(previousFacts.map((fact) => fact._id));
+  await deleteChunkVectors(previousChunks.map((chunk) => chunk.vectorId), owner);
+  await deleteFactVectors(previousFacts.map((fact) => fact._id), owner);
   await deleteRelationshipsForFacts(previousFacts.map((fact) => fact._id));
   await Fact.deleteMany({ documentId });
   await ExtractionIssue.deleteMany({ documentId });
@@ -118,9 +120,10 @@ const clearDerivedData = async (documentId) => {
   await Chunk.deleteMany({ documentId });
 };
 
-const recordIssues = async (documentId, chunk, issues) => {
+const recordIssues = async (documentId, chunk, issues, owner) => {
   if (!issues.length) return;
   await ExtractionIssue.insertMany(issues.map((issue) => ({
+    owner,
     documentId,
     chunkId: chunk._id,
     pageNumber: chunk.pageNumber ?? null,
@@ -141,6 +144,15 @@ const setStage = async (document, stage) => {
   console.log(`Document ${document._id}: ${stage}`);
 };
 
+// Chunk vectors are only marked done after a successful upsert, so an interrupted or failed
+// embedding stage is redone on the next run instead of leaving the document unsearchable.
+const embedChunks = async (document, chunkRecords) => {
+  await setStage(document, "embedding chunks");
+  await upsertChunkEmbeddings(chunkRecords.filter((chunk) => chunk.extractionStatus !== "skipped"), document.owner);
+  document.chunksEmbedded = true;
+  await document.save();
+};
+
 const parseAndChunk = async (document, pdfBuffer) => {
   const documentId = document._id;
   await setStage(document, "parsing PDF");
@@ -154,14 +166,14 @@ const parseAndChunk = async (document, pdfBuffer) => {
   }));
   const chunkRecords = await Chunk.insertMany(chunkInput.map((chunk) => ({
     ...chunk,
+    owner: document.owner,
     vectorId: `chunk_${chunk.documentId}_${chunk.pageNumber}_${chunk.chunkIndex}`,
     extractionStatus: isTrivialChunk(chunk.text) ? "skipped" : "pending",
   })));
   document.pageCount = pageRecords.length;
   document.chunkCount = chunkRecords.length;
   document.processedChunkCount = chunkRecords.filter((chunk) => chunk.extractionStatus === "skipped").length;
-  await setStage(document, "embedding chunks");
-  await upsertChunkEmbeddings(chunkRecords.filter((chunk) => chunk.extractionStatus !== "skipped"));
+  await embedChunks(document, chunkRecords);
   return { pageRecords, chunkRecords };
 };
 
@@ -184,7 +196,7 @@ const processDocument = async (documentId, { buffer = null, reset = false } = {}
   const heartbeat = startHeartbeat(documentId);
 
   try {
-    if (reset) await clearDerivedData(documentId);
+    if (reset) await clearDerivedData(documentId, document.owner);
     let pageRecords = await Page.find({ documentId }).sort({ pageNumber: 1 }).lean();
     let chunkRecords;
     if (!pageRecords.length) {
@@ -194,6 +206,7 @@ const processDocument = async (documentId, { buffer = null, reset = false } = {}
       chunkRecords = await Chunk.find({ documentId }).sort({ pageNumber: 1, chunkIndex: 1 }).lean();
       document.pageCount = pageRecords.length;
       document.chunkCount = chunkRecords.length;
+      if (!document.chunksEmbedded) await embedChunks(document, chunkRecords);
     }
 
     if (!document.primaryEntity) {
@@ -218,12 +231,12 @@ const processDocument = async (documentId, { buffer = null, reset = false } = {}
       const context = { primaryEntity: document.primaryEntity, onIssue: (issue) => issues.push(issue) };
       try {
         const facts = await extractFactsFromChunk(chunk, null, context);
-        const normalized = facts.map(normalizeFact).map((fact) => ({ ...fact, matchText: buildFactMatchText(fact) }));
+        const normalized = facts.map(normalizeFact).map((fact) => ({ ...fact, owner: document.owner, matchText: buildFactMatchText(fact) }));
         // Persist per chunk so an interrupted run resumes instead of restarting; replace any partial prior write.
         await Fact.deleteMany({ chunkId: chunk._id });
         await ExtractionIssue.deleteMany({ chunkId: chunk._id });
         if (normalized.length) await Fact.insertMany(normalized);
-        await recordIssues(documentId, chunk, issues);
+        await recordIssues(documentId, chunk, issues, document.owner);
         await Chunk.updateOne({ _id: chunk._id }, { $set: { extractionStatus: "done", factCount: normalized.length } });
       } catch (error) {
         failedChunks.push(chunk._id.toString());
@@ -231,7 +244,7 @@ const processDocument = async (documentId, { buffer = null, reset = false } = {}
         const message = String(error.message).split("\n")[0];
         console.warn(`Document ${documentId}: extraction failed for chunk ${chunk._id} (page ${chunk.pageNumber}): ${message}`);
         await ExtractionIssue.deleteMany({ chunkId: chunk._id });
-        await recordIssues(documentId, chunk, [...issues, { type: "chunk_failed", message, handling: "Skipped this page after retries and continued with the rest of the document." }]).catch(() => {});
+        await recordIssues(documentId, chunk, [...issues, { type: "chunk_failed", message, handling: "Skipped this page after retries and continued with the rest of the document." }], document.owner).catch(() => {});
       }
       completed += 1;
       const processedChunkCount = chunkRecords.length - pendingChunks.length + completed;
@@ -252,10 +265,10 @@ const processDocument = async (documentId, { buffer = null, reset = false } = {}
       { _id: documentId },
       { $set: { processingStage: note ? `${label} ${done}/${total}, ${note}` : `${label} ${done}/${total}` } },
     );
-    const factVectors = await upsertFactEmbeddings(factRecords, stageProgress("embedding facts"));
+    const factVectors = await upsertFactEmbeddings(factRecords, stageProgress("embedding facts"), document.owner);
     await setStage(document, `matching facts 0/${factRecords.length}`);
     await deleteRelationshipsForFacts(factRecords.map((fact) => fact._id));
-    const candidateRelationships = await createCandidateRelationships(factRecords, undefined, factVectors, undefined, stageProgress("matching facts"));
+    const candidateRelationships = await createCandidateRelationships(factRecords, undefined, factVectors, undefined, stageProgress("matching facts"), document.owner);
     const reconciled = await reconcileRelationships(candidateRelationships);
     document.status = "processed";
     document.processingStage = null;
@@ -387,9 +400,9 @@ const buildProgress = (document) => {
 
 const withProgress = (document) => (document ? { ...document, progress: buildProgress(document) } : document);
 
-const getDocumentById = async (documentId) => withProgress(await Document.findById(documentId).lean());
+const getDocumentById = async (documentId, owner) => withProgress(await Document.findOne({ _id: documentId, ...(owner ? { owner } : {}) }).lean());
 
-const listDocuments = async () => (await Document.find().sort({ createdAt: -1 }).lean()).map(withProgress);
+const listDocuments = async (owner) => (await Document.find(owner ? { owner } : {}).sort({ createdAt: -1 }).lean()).map(withProgress);
 
 const markDocumentFailed = async (documentId, message) => Document.findOneAndUpdate(
   { _id: documentId, status: { $ne: "processed" } },
